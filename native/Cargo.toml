@@ -1,0 +1,19 @@
+[package]
+name = "freenet-android"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+
+[lib]
+name = "freenet_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = { version = "0.21.1", default-features = false }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

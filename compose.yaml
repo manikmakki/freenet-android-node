@@ -1,0 +1,23 @@
+services:
+  dev:
+    build:
+      context: .
+    image: freenet-android-node-dev:local
+    working_dir: /workspace/freenet-android-node
+    environment:
+      CARGO_TARGET_DIR: /workspace/target/cargo
+      GRADLE_USER_HOME: /workspace/cache/gradle
+    volumes:
+      - .:/workspace/freenet-android-node
+      - ../freenet-core:/workspace/freenet-core
+      - ./artifacts:/workspace/artifacts
+      - cargo-registry:/opt/cargo/registry
+      - cargo-git:/opt/cargo/git
+      - build-target:/workspace/target
+      - gradle-cache:/workspace/cache/gradle
+
+volumes:
+  build-target:
+  cargo-git:
+  cargo-registry:
+  gradle-cache:

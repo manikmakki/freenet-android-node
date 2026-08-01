@@ -1,0 +1,12 @@
+/.build/
+/.gradle/
+/artifacts/*
+!/artifacts/.gitkeep
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/app/src/main/jniLibs/
+/native/target/
+local.properties
+*.iml
+.idea/
