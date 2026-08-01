@@ -1669,11 +1669,14 @@ version = "0.1.0"
 dependencies = [
  "freenet",
  "freenet-stdlib",
+ "getrandom 0.3.4",
  "jni 0.21.1",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tokio-tungstenite 0.27.0",
+ "zeroize",
 ]
 
 [[package]]

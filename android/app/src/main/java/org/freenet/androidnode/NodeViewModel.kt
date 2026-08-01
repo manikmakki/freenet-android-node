@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 
 class NodeViewModel(application: Application) : AndroidViewModel(application) {
     val state = NodeRepository.state
+    val storageState = NodeRepository.storageState
 
     fun startLocalNode() {
         NodeRepository.startLocal(getApplication())
@@ -22,4 +23,3 @@ class NodeViewModel(application: Application) : AndroidViewModel(application) {
         NodeRepository.reportNotificationPermissionRequired()
     }
 }
-

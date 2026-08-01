@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
@@ -9,7 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use freenet::config::{ConfigArgs, ConfigPathsArgs};
 use freenet::local_node::{Executor, OperationMode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
+use zeroize::Zeroize;
 
 use crate::contract_proof::{
     self, ContractProofResult, ContractProofState, ContractProofStatus, PersistenceResult,
@@ -31,10 +34,13 @@ struct AndroidNodeConfig {
     files_dir: PathBuf,
     cache_dir: PathBuf,
     no_backup_files_dir: PathBuf,
+    state_directory: PathBuf,
     database_directory: PathBuf,
     contract_directory: PathBuf,
     configuration_directory: PathBuf,
     log_directory: PathBuf,
+    identity_directory: PathBuf,
+    temporary_directory: PathBuf,
     websocket_port: u16,
 }
 
@@ -55,10 +61,13 @@ impl AndroidNodeConfig {
             ("filesDir", &self.files_dir),
             ("cacheDir", &self.cache_dir),
             ("noBackupFilesDir", &self.no_backup_files_dir),
+            ("stateDirectory", &self.state_directory),
             ("databaseDirectory", &self.database_directory),
             ("contractDirectory", &self.contract_directory),
             ("configurationDirectory", &self.configuration_directory),
             ("logDirectory", &self.log_directory),
+            ("identityDirectory", &self.identity_directory),
+            ("temporaryDirectory", &self.temporary_directory),
         ];
         for (name, path) in named_paths {
             if !is_normal_absolute_path(path) {
@@ -69,16 +78,15 @@ impl AndroidNodeConfig {
             }
         }
 
-        let data_root = self.data_root();
         require_exact_path(
             "databaseDirectory",
             &self.database_directory,
-            &data_root.join("db/local"),
+            &self.files_dir.join("freenet/database/local"),
         )?;
         require_exact_path(
             "contractDirectory",
             &self.contract_directory,
-            &data_root.join("contracts/local"),
+            &self.files_dir.join("freenet/contracts/local"),
         )?;
         require_exact_path(
             "configurationDirectory",
@@ -89,6 +97,21 @@ impl AndroidNodeConfig {
             "logDirectory",
             &self.log_directory,
             &self.files_dir.join("freenet/logs"),
+        )?;
+        require_exact_path(
+            "stateDirectory",
+            &self.state_directory,
+            &self.files_dir.join("freenet/state"),
+        )?;
+        require_exact_path(
+            "identityDirectory",
+            &self.identity_directory,
+            &self.no_backup_files_dir.join("freenet/identity"),
+        )?;
+        require_exact_path(
+            "temporaryDirectory",
+            &self.temporary_directory,
+            &self.cache_dir.join("freenet/temporary"),
         )?;
 
         if self.websocket_port == 0 {
@@ -101,41 +124,395 @@ impl AndroidNodeConfig {
     }
 
     fn data_root(&self) -> PathBuf {
-        self.no_backup_files_dir.join("freenet")
+        self.state_directory.clone()
     }
 
     fn webapp_cache_dir(&self) -> PathBuf {
-        self.cache_dir.join("freenet/webapp-cache")
+        self.temporary_directory.join("webapp-cache")
     }
 
-    fn create_directories(&self) -> Result<(), NodeError> {
+    fn transport_keypair_path(&self) -> PathBuf {
+        self.identity_directory.join("transport_keypair")
+    }
+
+    fn delegate_cipher_path(&self) -> PathBuf {
+        self.identity_directory.join("delegate_cipher")
+    }
+
+    fn prepare_storage(&self) -> Result<String, NodeError> {
+        self.migrate_prototype_storage()?;
         for path in [
             &self.files_dir,
             &self.cache_dir,
             &self.no_backup_files_dir,
+            &self.state_directory,
             &self.configuration_directory,
             &self.log_directory,
             &self.database_directory,
             &self.contract_directory,
+            &self.identity_directory,
+            &self.temporary_directory,
         ] {
-            std::fs::create_dir_all(path).map_err(|error| {
-                NodeError::new(
-                    "DIRECTORY_CREATE_FAILED",
-                    format!("Failed to create {}: {error}", path.display()),
-                )
-            })?;
+            create_private_directory(path)?;
         }
-        std::fs::create_dir_all(self.webapp_cache_dir()).map_err(|error| {
-            NodeError::new(
-                "DIRECTORY_CREATE_FAILED",
-                format!(
-                    "Failed to create {}: {error}",
-                    self.webapp_cache_dir().display()
-                ),
-            )
-        })?;
+        create_private_directory(&self.state_directory.join("secrets/local"))?;
+        create_private_directory(&self.temporary_directory.join("wasmtime-cache"))?;
+        create_private_directory(&self.webapp_cache_dir())?;
+        ensure_directory_symlink(
+            &self.state_directory.join("db"),
+            self.database_directory
+                .parent()
+                .expect("validated database path has a parent"),
+        )?;
+        ensure_directory_symlink(
+            &self.state_directory.join("contracts"),
+            self.contract_directory
+                .parent()
+                .expect("validated contract path has a parent"),
+        )?;
+        ensure_directory_symlink(
+            &self.state_directory.join("wasmtime-cache"),
+            &self.temporary_directory.join("wasmtime-cache"),
+        )?;
+        self.ensure_identity_files()?;
+        self.identity_fingerprint()
+    }
+
+    fn migrate_prototype_storage(&self) -> Result<(), NodeError> {
+        let old_root = self.no_backup_files_dir.join("freenet");
+        migrate_path(
+            &old_root.join("db"),
+            &self.files_dir.join("freenet/database"),
+        )?;
+        migrate_path(
+            &old_root.join("contracts"),
+            &self.files_dir.join("freenet/contracts"),
+        )?;
+        migrate_path(
+            &old_root.join("delegates"),
+            &self.state_directory.join("delegates"),
+        )?;
+        migrate_path(
+            &old_root.join("secrets"),
+            &self.state_directory.join("secrets"),
+        )?;
+        migrate_path(
+            &old_root.join("wasmtime-cache"),
+            &self.temporary_directory.join("wasmtime-cache"),
+        )?;
+        migrate_path(
+            &old_root.join("_EVENT_LOG"),
+            &self.state_directory.join("_EVENT_LOG"),
+        )?;
+        migrate_path(
+            &old_root.join("_EVENT_LOG_LOCAL"),
+            &self.state_directory.join("_EVENT_LOG_LOCAL"),
+        )?;
+
+        create_private_directory(&self.identity_directory)?;
+        migrate_path(
+            &self.state_directory.join("secrets/local/transport_keypair"),
+            &self.transport_keypair_path(),
+        )?;
+        migrate_path(
+            &self.state_directory.join("secrets/local/delegate_cipher"),
+            &self.delegate_cipher_path(),
+        )?;
+        self.migrate_persisted_config_paths()?;
         Ok(())
     }
+
+    fn migrate_persisted_config_paths(&self) -> Result<(), NodeError> {
+        let config_path = self.configuration_directory.join("config.toml");
+        if !config_path.exists() {
+            return Ok(());
+        }
+
+        let original = std::fs::read_to_string(&config_path).map_err(|error| {
+            NodeError::new(
+                "CONFIG_MIGRATION_FAILED",
+                format!("Failed to read the persisted configuration: {error}"),
+            )
+        })?;
+        let old_root = self.no_backup_files_dir.join("freenet");
+        let replacements = [
+            (
+                old_root.join("secrets/local/transport_keypair"),
+                self.transport_keypair_path(),
+            ),
+            (
+                old_root.join("secrets/local/delegate_cipher"),
+                self.delegate_cipher_path(),
+            ),
+            (
+                old_root.join("wasmtime-cache"),
+                self.temporary_directory.join("wasmtime-cache"),
+            ),
+            (
+                old_root.join("contracts"),
+                self.files_dir.join("freenet/contracts"),
+            ),
+            (
+                old_root.join("delegates"),
+                self.state_directory.join("delegates"),
+            ),
+            (
+                old_root.join("secrets"),
+                self.state_directory.join("secrets"),
+            ),
+            (old_root.join("db"), self.files_dir.join("freenet/database")),
+            (
+                old_root.join("_EVENT_LOG"),
+                self.state_directory.join("_EVENT_LOG"),
+            ),
+            (old_root, self.state_directory.clone()),
+        ];
+
+        let mut migrated = original.clone();
+        for (old, new) in replacements {
+            let old_value = format!("\"{}\"", old.to_string_lossy());
+            let new_value = format!("\"{}\"", new.to_string_lossy());
+            migrated = migrated.replace(&old_value, &new_value);
+        }
+        if migrated == original {
+            return Ok(());
+        }
+
+        write_private_config_atomically(&config_path, migrated.as_bytes())
+    }
+
+    fn ensure_identity_files(&self) -> Result<(), NodeError> {
+        let transport_keypair_path = self.transport_keypair_path();
+        if !transport_keypair_path.exists() {
+            freenet::transport::TransportKeypair::new()
+                .save(&transport_keypair_path)
+                .map_err(|error| {
+                    NodeError::new(
+                        "IDENTITY_CREATE_FAILED",
+                        format!("Failed to persist the transport identity: {error}"),
+                    )
+                })?;
+        }
+
+        let delegate_cipher_path = self.delegate_cipher_path();
+        if !delegate_cipher_path.exists() {
+            let mut cipher = [0_u8; 32];
+            getrandom::fill(&mut cipher).map_err(|error| {
+                NodeError::new(
+                    "IDENTITY_CREATE_FAILED",
+                    format!("Failed to obtain OS randomness for the delegate cipher: {error}"),
+                )
+            })?;
+            let result = write_secret_file_atomically(&delegate_cipher_path, &cipher);
+            cipher.zeroize();
+            result?;
+        }
+        validate_owner_only_file(&transport_keypair_path)?;
+        validate_owner_only_file(&delegate_cipher_path)?;
+        Ok(())
+    }
+
+    fn identity_fingerprint(&self) -> Result<String, NodeError> {
+        let keypair = freenet::transport::TransportKeypair::load(self.transport_keypair_path())
+            .map_err(|error| {
+                NodeError::new(
+                    "IDENTITY_READ_FAILED",
+                    format!("Failed to load the persisted transport identity: {error}"),
+                )
+            })?;
+        let digest = Sha256::digest(keypair.public().as_bytes());
+        Ok(digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
+    }
+}
+
+fn create_private_directory(path: &Path) -> Result<(), NodeError> {
+    std::fs::create_dir_all(path).map_err(|error| {
+        NodeError::new(
+            "DIRECTORY_CREATE_FAILED",
+            format!("Failed to create {}: {error}", path.display()),
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| {
+                NodeError::new(
+                    "DIRECTORY_PERMISSION_FAILED",
+                    format!("Failed to secure {}: {error}", path.display()),
+                )
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_path(source: &Path, destination: &Path) -> Result<(), NodeError> {
+    if !source.exists() {
+        return Ok(());
+    }
+    if destination.exists() {
+        return Err(NodeError::new(
+            "STORAGE_MIGRATION_COLLISION",
+            format!(
+                "Refusing to merge existing storage paths {} and {}",
+                source.display(),
+                destination.display()
+            ),
+        ));
+    }
+    if let Some(parent) = destination.parent() {
+        create_private_directory(parent)?;
+    }
+    std::fs::rename(source, destination).map_err(|error| {
+        NodeError::new(
+            "STORAGE_MIGRATION_FAILED",
+            format!(
+                "Failed to move {} to {}: {error}",
+                source.display(),
+                destination.display()
+            ),
+        )
+    })
+}
+
+fn ensure_directory_symlink(link: &Path, target: &Path) -> Result<(), NodeError> {
+    match std::fs::symlink_metadata(link) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_symlink() {
+                return Err(NodeError::new(
+                    "INVALID_STORAGE_LINK",
+                    format!(
+                        "{} must be an adapter-managed directory link",
+                        link.display()
+                    ),
+                ));
+            }
+            let existing = std::fs::read_link(link).map_err(|error| {
+                NodeError::new(
+                    "INVALID_STORAGE_LINK",
+                    format!("Failed to inspect {}: {error}", link.display()),
+                )
+            })?;
+            if existing != target {
+                return Err(NodeError::new(
+                    "INVALID_STORAGE_LINK",
+                    format!(
+                        "{} points to an unexpected app-private directory",
+                        link.display()
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, link).map_err(|error| {
+                NodeError::new(
+                    "STORAGE_LINK_FAILED",
+                    format!("Failed to link {}: {error}", link.display()),
+                )
+            })?;
+            Ok(())
+        }
+        Err(error) => Err(NodeError::new(
+            "INVALID_STORAGE_LINK",
+            format!("Failed to inspect {}: {error}", link.display()),
+        )),
+    }
+}
+
+fn write_secret_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), NodeError> {
+    let temporary = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&temporary);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary).map_err(|error| {
+        NodeError::new(
+            "IDENTITY_CREATE_FAILED",
+            format!("Failed to create a private identity file: {error}"),
+        )
+    })?;
+    file.write_all(bytes).map_err(|error| {
+        NodeError::new(
+            "IDENTITY_CREATE_FAILED",
+            format!("Failed to write a private identity file: {error}"),
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        NodeError::new(
+            "IDENTITY_CREATE_FAILED",
+            format!("Failed to sync a private identity file: {error}"),
+        )
+    })?;
+    std::fs::rename(&temporary, path).map_err(|error| {
+        NodeError::new(
+            "IDENTITY_CREATE_FAILED",
+            format!("Failed to install a private identity file: {error}"),
+        )
+    })
+}
+
+fn write_private_config_atomically(path: &Path, bytes: &[u8]) -> Result<(), NodeError> {
+    let temporary = path.with_extension("toml.tmp");
+    let _ = std::fs::remove_file(&temporary);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary).map_err(|error| {
+        NodeError::new(
+            "CONFIG_MIGRATION_FAILED",
+            format!("Failed to create the migrated configuration: {error}"),
+        )
+    })?;
+    file.write_all(bytes).map_err(|error| {
+        NodeError::new(
+            "CONFIG_MIGRATION_FAILED",
+            format!("Failed to write the migrated configuration: {error}"),
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        NodeError::new(
+            "CONFIG_MIGRATION_FAILED",
+            format!("Failed to sync the migrated configuration: {error}"),
+        )
+    })?;
+    std::fs::rename(&temporary, path).map_err(|error| {
+        NodeError::new(
+            "CONFIG_MIGRATION_FAILED",
+            format!("Failed to install the migrated configuration: {error}"),
+        )
+    })
+}
+
+fn validate_owner_only_file(path: &Path) -> Result<(), NodeError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|error| NodeError::new("IDENTITY_READ_FAILED", error.to_string()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(NodeError::new(
+                "INSECURE_IDENTITY_PERMISSIONS",
+                "A persisted identity file is accessible outside the application UID",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn is_normal_absolute_path(path: &Path) -> bool {
@@ -183,6 +560,7 @@ struct NodeStatus {
     state: NodeState,
     detail: String,
     websocket_port: Option<u16>,
+    identity_fingerprint: Option<String>,
     transition_time_ms: u64,
     completed_start_cycles: u64,
 }
@@ -193,6 +571,7 @@ impl NodeStatus {
             state: NodeState::Stopped,
             detail: "The local node is stopped".to_owned(),
             websocket_port: None,
+            identity_fingerprint: None,
             transition_time_ms: unix_time_ms(),
             completed_start_cycles: 0,
         }
@@ -232,6 +611,20 @@ struct ResponseEnvelope<T: Serialize> {
 #[derive(Serialize)]
 struct LogData {
     entries: Vec<LogEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageStatus {
+    persistent_bytes: u64,
+    temporary_bytes: u64,
+    identity_bytes: u64,
+    total_bytes: u64,
+    identity_fingerprint: Option<String>,
+    identity_owner_only: bool,
+    secret_material_in_logs: bool,
+    layout_ready: bool,
+    prototype_key_security_debt: bool,
 }
 
 enum NodeCommand {
@@ -274,6 +667,10 @@ impl NodeRuntime {
             Ok(config) => config,
             Err(error) => return error_response(error),
         };
+        let identity_fingerprint = match config.prepare_storage() {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => return error_response(error),
+        };
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let mut inner = lock_recover(&self.shared.inner);
@@ -297,6 +694,7 @@ impl NodeRuntime {
             state: NodeState::Starting,
             detail: "The dedicated native node thread is starting".to_owned(),
             websocket_port: Some(config.websocket_port),
+            identity_fingerprint: Some(identity_fingerprint),
             transition_time_ms: unix_time_ms(),
             completed_start_cycles,
         };
@@ -468,6 +866,126 @@ impl NodeRuntime {
             entries: logs.iter().skip(start).cloned().collect(),
         })
     }
+
+    pub(crate) fn storage_status(&self, config_json: &str) -> String {
+        let config = match AndroidNodeConfig::parse(config_json) {
+            Ok(config) => config,
+            Err(error) => return error_response(error),
+        };
+        match self.measure_storage(&config) {
+            Ok(status) => success_response(status),
+            Err(error) => error_response(error),
+        }
+    }
+
+    fn measure_storage(&self, config: &AndroidNodeConfig) -> Result<StorageStatus, NodeError> {
+        let persistent_root = config.files_dir.join("freenet");
+        let persistent_bytes = directory_size_without_following_links(&persistent_root)?;
+        let temporary_bytes = directory_size_without_following_links(&config.temporary_directory)?;
+        let identity_bytes = directory_size_without_following_links(&config.identity_directory)?;
+        let identity_fingerprint = if config.transport_keypair_path().exists() {
+            Some(config.identity_fingerprint()?)
+        } else {
+            None
+        };
+        let identity_owner_only = config.transport_keypair_path().exists()
+            && config.delegate_cipher_path().exists()
+            && validate_owner_only_file(&config.transport_keypair_path()).is_ok()
+            && validate_owner_only_file(&config.delegate_cipher_path()).is_ok();
+        let secret_material_in_logs = self.secret_material_in_logs(config)?;
+        let layout_ready = [
+            &config.state_directory,
+            &config.database_directory,
+            &config.contract_directory,
+            &config.configuration_directory,
+            &config.log_directory,
+            &config.identity_directory,
+            &config.temporary_directory,
+        ]
+        .into_iter()
+        .all(|path| path.is_dir());
+
+        Ok(StorageStatus {
+            persistent_bytes,
+            temporary_bytes,
+            identity_bytes,
+            total_bytes: persistent_bytes
+                .saturating_add(temporary_bytes)
+                .saturating_add(identity_bytes),
+            identity_fingerprint,
+            identity_owner_only,
+            secret_material_in_logs,
+            layout_ready,
+            prototype_key_security_debt: true,
+        })
+    }
+
+    fn secret_material_in_logs(&self, config: &AndroidNodeConfig) -> Result<bool, NodeError> {
+        let log_bytes = {
+            let logs = lock_recover(&self.shared.logs);
+            logs.iter()
+                .flat_map(|entry| entry.message.as_bytes().iter().copied())
+                .collect::<Vec<_>>()
+        };
+        for path in [
+            config.transport_keypair_path(),
+            config.delegate_cipher_path(),
+        ] {
+            if !path.exists() {
+                continue;
+            }
+            let mut secret = std::fs::read(&path).map_err(|error| {
+                NodeError::new(
+                    "STORAGE_MEASURE_FAILED",
+                    format!("Failed to audit private identity storage: {error}"),
+                )
+            })?;
+            if secret.len() >= 8
+                && log_bytes
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_slice())
+            {
+                secret.zeroize();
+                return Ok(true);
+            }
+            secret.zeroize();
+        }
+        Ok(false)
+    }
+}
+
+fn directory_size_without_following_links(path: &Path) -> Result<u64, NodeError> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        NodeError::new(
+            "STORAGE_MEASURE_FAILED",
+            format!("Failed to inspect app-private storage: {error}"),
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Ok(0);
+    }
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    let mut total = 0_u64;
+    for entry in std::fs::read_dir(path).map_err(|error| {
+        NodeError::new(
+            "STORAGE_MEASURE_FAILED",
+            format!("Failed to enumerate app-private storage: {error}"),
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            NodeError::new(
+                "STORAGE_MEASURE_FAILED",
+                format!("Failed to read an app-private storage entry: {error}"),
+            )
+        })?;
+        total = total.saturating_add(directory_size_without_following_links(&entry.path())?);
+    }
+    Ok(total)
 }
 
 impl SharedRuntime {
@@ -723,7 +1241,7 @@ async fn run_local_runtime(
 async fn prepare_local_node(
     android_config: &AndroidNodeConfig,
 ) -> Result<(Executor, freenet::config::WebsocketApiConfig), NodeError> {
-    android_config.create_directories()?;
+    android_config.prepare_storage()?;
 
     let mut args = ConfigArgs {
         mode: Some(OperationMode::Local),
@@ -736,6 +1254,8 @@ async fn prepare_local_node(
     };
     args.ws_api.address = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
     args.ws_api.ws_api_port = Some(android_config.websocket_port);
+    args.secrets.transport_keypair = Some(android_config.transport_keypair_path());
+    args.secrets.cipher = Some(android_config.delegate_cipher_path());
 
     let mut config = args.build().await.map_err(|error| {
         NodeError::new(
@@ -744,12 +1264,12 @@ async fn prepare_local_node(
         )
     })?;
     let paths = config.paths();
-    require_exact_path(
+    require_canonical_path(
         "Freenet database directory",
         &paths.db_dir(OperationMode::Local),
         &android_config.database_directory,
     )?;
-    require_exact_path(
+    require_canonical_path(
         "Freenet contract directory",
         &paths.contracts_dir(OperationMode::Local),
         &android_config.contract_directory,
@@ -765,6 +1285,25 @@ async fn prepare_local_node(
             )
         })?;
     Ok((executor, socket))
+}
+
+fn require_canonical_path(name: &str, actual: &Path, expected: &Path) -> Result<(), NodeError> {
+    let actual = std::fs::canonicalize(actual).map_err(|error| {
+        NodeError::new(
+            "INVALID_PATH_LAYOUT",
+            format!("Failed to resolve {name} at {}: {error}", actual.display()),
+        )
+    })?;
+    let expected = std::fs::canonicalize(expected).map_err(|error| {
+        NodeError::new(
+            "INVALID_PATH_LAYOUT",
+            format!(
+                "Failed to resolve expected {name} at {}: {error}",
+                expected.display()
+            ),
+        )
+    })?;
+    require_exact_path(name, &actual, &expected)
 }
 
 fn config_json_port(config_json: &str) -> Option<u16> {
@@ -820,16 +1359,20 @@ fn serialize_response<T: Serialize>(response: &ResponseEnvelope<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{AndroidNodeConfig, NodeRuntime, NodeState, error_response, success_response};
+    use std::path::Path;
 
     fn valid_config_json() -> String {
         serde_json::json!({
             "filesDir": "/data/user/0/org.freenet.androidnode/files",
             "cacheDir": "/data/user/0/org.freenet.androidnode/cache",
             "noBackupFilesDir": "/data/user/0/org.freenet.androidnode/no_backup",
-            "databaseDirectory": "/data/user/0/org.freenet.androidnode/no_backup/freenet/db/local",
-            "contractDirectory": "/data/user/0/org.freenet.androidnode/no_backup/freenet/contracts/local",
+            "stateDirectory": "/data/user/0/org.freenet.androidnode/files/freenet/state",
+            "databaseDirectory": "/data/user/0/org.freenet.androidnode/files/freenet/database/local",
+            "contractDirectory": "/data/user/0/org.freenet.androidnode/files/freenet/contracts/local",
             "configurationDirectory": "/data/user/0/org.freenet.androidnode/files/freenet/config",
             "logDirectory": "/data/user/0/org.freenet.androidnode/files/freenet/logs",
+            "identityDirectory": "/data/user/0/org.freenet.androidnode/no_backup/freenet/identity",
+            "temporaryDirectory": "/data/user/0/org.freenet.androidnode/cache/freenet/temporary",
             "websocketPort": 7509,
         })
         .to_string()
@@ -841,13 +1384,13 @@ mod tests {
 
         assert_eq!(
             config.database_directory.to_string_lossy(),
-            "/data/user/0/org.freenet.androidnode/no_backup/freenet/db/local"
+            "/data/user/0/org.freenet.androidnode/files/freenet/database/local"
         );
     }
 
     #[test]
     fn mismatched_derived_database_path_is_rejected() {
-        let json = valid_config_json().replace("db/local", "somewhere-else");
+        let json = valid_config_json().replace("database/local", "somewhere-else");
         let error = AndroidNodeConfig::parse(&json).expect_err("invalid path must fail");
 
         assert_eq!(error.code, "INVALID_PATH_LAYOUT");
@@ -901,5 +1444,102 @@ mod tests {
 
         assert_eq!(response["ok"], false);
         assert_eq!(response["error"]["code"], "NODE_NOT_RUNNING_LOCAL");
+    }
+
+    #[test]
+    fn identity_is_owner_only_stable_and_separated_from_temporary_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "freenet-android-phase6-{}-{}",
+            std::process::id(),
+            super::unix_time_ms()
+        ));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let no_backup = root.join("no_backup");
+        let persistent = files.join("freenet");
+        let config_json = serde_json::json!({
+            "filesDir": files,
+            "cacheDir": cache,
+            "noBackupFilesDir": no_backup,
+            "stateDirectory": persistent.join("state"),
+            "databaseDirectory": persistent.join("database/local"),
+            "contractDirectory": persistent.join("contracts/local"),
+            "configurationDirectory": persistent.join("config"),
+            "logDirectory": persistent.join("logs"),
+            "identityDirectory": no_backup.join("freenet/identity"),
+            "temporaryDirectory": cache.join("freenet/temporary"),
+            "websocketPort": 7509,
+        })
+        .to_string();
+
+        let config = AndroidNodeConfig::parse(&config_json).expect("valid temp config");
+        std::fs::create_dir_all(&config.configuration_directory)
+            .expect("create legacy config directory");
+        let legacy_root = no_backup.join("freenet");
+        let legacy_config = format!(
+            "transport_keypair = \"{}\"\ncipher = \"{}\"\ncontracts_dir = \"{}\"\ndb_dir = \"{}\"\ndata_dir = \"{}\"\nwasmtime_cache_dir = \"{}\"\n",
+            legacy_root
+                .join("secrets/local/transport_keypair")
+                .display(),
+            legacy_root.join("secrets/local/delegate_cipher").display(),
+            legacy_root.join("contracts").display(),
+            legacy_root.join("db").display(),
+            legacy_root.display(),
+            legacy_root.join("wasmtime-cache").display(),
+        );
+        std::fs::write(
+            config.configuration_directory.join("config.toml"),
+            legacy_config,
+        )
+        .expect("write legacy config paths");
+
+        let first = config.prepare_storage().expect("create private identity");
+        let second = config.prepare_storage().expect("reuse private identity");
+        assert_eq!(first, second);
+        assert!(config.transport_keypair_path().starts_with(&no_backup));
+        assert!(config.delegate_cipher_path().starts_with(&no_backup));
+        assert!(!config.transport_keypair_path().starts_with(&cache));
+        assert_eq!(
+            std::fs::canonicalize(config.state_directory.join("db")).expect("db link"),
+            persistent.join("database")
+        );
+        let migrated_config =
+            std::fs::read_to_string(config.configuration_directory.join("config.toml"))
+                .expect("read migrated config paths");
+        assert!(migrated_config.contains(config.identity_directory.to_string_lossy().as_ref()));
+        assert!(migrated_config.contains(persistent.join("database").to_string_lossy().as_ref()));
+        assert!(
+            migrated_config.contains(cache.join("freenet/temporary").to_string_lossy().as_ref())
+        );
+        assert!(
+            !migrated_config.contains(
+                legacy_root
+                    .join("secrets/local/transport_keypair")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(
+            !migrated_config.contains(
+                legacy_root
+                    .join("secrets/local/delegate_cipher")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(!migrated_config.contains(&format!("\"{}\"", legacy_root.display())));
+
+        let runtime = NodeRuntime::new();
+        let status: serde_json::Value = serde_json::from_str(&runtime.storage_status(&config_json))
+            .expect("parse storage response");
+        assert_eq!(status["ok"], true);
+        assert_eq!(status["data"]["identityOwnerOnly"], true);
+        assert_eq!(status["data"]["secretMaterialInLogs"], false);
+        assert_eq!(status["data"]["layoutReady"], true);
+        assert_eq!(status["data"]["identityFingerprint"], first);
+
+        if Path::new(&root).exists() {
+            std::fs::remove_dir_all(root).expect("remove isolated test storage");
+        }
     }
 }

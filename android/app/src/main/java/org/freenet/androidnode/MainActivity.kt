@@ -29,6 +29,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
@@ -50,6 +52,7 @@ class MainActivity : ComponentActivity() {
 private fun NativeBridgeScreen(nodeViewModel: NodeViewModel) {
     val context = LocalContext.current
     val serviceState by nodeViewModel.state.collectAsState()
+    val storageState by nodeViewModel.storageState.collectAsState()
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -90,6 +93,15 @@ private fun NativeBridgeScreen(nodeViewModel: NodeViewModel) {
         }
     }
 
+    LaunchedEffect(Unit) {
+        while (true) {
+            withContext(Dispatchers.IO) {
+                NodeRepository.refreshStorage(context.applicationContext)
+            }
+            delay(2_000)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -114,6 +126,18 @@ private fun NativeBridgeScreen(nodeViewModel: NodeViewModel) {
         Text(text = "Node detail: ${serviceState.detail}")
         Text(text = "Service active: ${serviceState.serviceActive}")
         Text(text = "Completed start cycles: ${serviceState.completedStartCycles}")
+        Text(text = "Identity fingerprint: ${storageState.identityFingerprint ?: "Not created"}")
+        Text(text = "Storage status: ${storageState.detail}")
+        Text(text = "Identity files owner-only: ${storageState.identityOwnerOnly}")
+        Text(text = "Storage layout ready: ${storageState.layoutReady}")
+        Text(
+            text = "Storage used: ${storageState.totalBytes.displayBytes()} " +
+                "(persistent ${storageState.persistentBytes.displayBytes()}, " +
+                "temporary ${storageState.temporaryBytes.displayBytes()}, " +
+                "identity ${storageState.identityBytes.displayBytes()})",
+        )
+        Text(text = "Secret material detected in adapter logs: ${storageState.secretMaterialInLogs}")
+        Text(text = "Key protection: Prototype file-backed identity; Keystore wrapping pending")
         Text(text = "Contract proof state: ${contractProof.state}")
         Text(text = "Contract proof detail: ${contractProof.detail}")
         Text(text = "Contract fixture: ${contractProof.fixtureName}")
@@ -277,3 +301,9 @@ private fun JSONObject.optionalString(name: String): String? =
     if (isNull(name)) null else optString(name)
 
 private fun Long?.displayMicros(): String = this?.let { "$it µs" } ?: "pending"
+
+private fun Long.displayBytes(): String = when {
+    this >= 1_048_576 -> "%.1f MiB".format(this / 1_048_576.0)
+    this >= 1_024 -> "%.1f KiB".format(this / 1_024.0)
+    else -> "$this B"
+}

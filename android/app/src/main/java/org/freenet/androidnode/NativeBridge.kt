@@ -25,6 +25,8 @@ object NativeBridge {
 
     external fun nativeGetRecentLogs(maxEntries: Int): String
 
+    external fun nativeGetStorageStatus(configJson: String): String
+
     external fun nativeRunContractProof(): String
 
     external fun nativeVerifyContractPersistence(): String
@@ -46,6 +48,9 @@ object NativeBridge {
 
     fun recentLogs(maxEntries: Int): Result<String> =
         withLoadedLibrary { nativeGetRecentLogs(maxEntries) }
+
+    fun storageStatus(configJson: String): Result<String> =
+        withLoadedLibrary { nativeGetStorageStatus(configJson) }
 
     fun runContractProof(): Result<String> = withLoadedLibrary(::nativeRunContractProof)
 

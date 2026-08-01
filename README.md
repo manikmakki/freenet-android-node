@@ -139,6 +139,36 @@ This verifies the foreground notification and its Pause/Stop actions, removes
 the Activity task, turns the screen off, checks non-sticky behavior, force-stops
 the process while the node is live, and then proves a clean explicit restart.
 
+## Persistent storage and prototype identity security
+
+Phase 6 separates Android-owned storage by durability and sensitivity:
+
+```text
+filesDir/freenet/          persistent database, contracts, state, config, logs
+cacheDir/freenet/temporary/  disposable web-app and Wasmtime caches
+noBackupFilesDir/freenet/identity/  transport keypair and delegate cipher
+```
+
+Rust exclusively creates and loads the identity files with owner-only
+permissions. Kotlin receives only a public-key-derived fingerprint and
+aggregate byte counts. The UI labels the current file-backed protection as
+prototype security debt: Android Keystore wrapping, invalidation recovery, and
+explicit temporary-buffer hardening remain required before wider distribution.
+Android backups remain disabled for the entire application.
+
+Run the non-destructive Phase 6 device proof with:
+
+```bash
+ADB_SERIAL=<device-serial> scripts/smoke-phase6-adb.sh
+```
+
+To additionally prove that clearing application data creates a new identity,
+opt in to deleting all debug-app state:
+
+```bash
+ADB_SERIAL=<device-serial> PHASE6_CLEAR_DATA=1 scripts/smoke-phase6-adb.sh
+```
+
 ## Run the Phase 4 contract proof
 
 The app exposes **Run WASM contract proof** and **Verify contract persistence**

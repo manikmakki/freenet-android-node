@@ -18,6 +18,7 @@ data class NodeUiState(
     val startedAtElapsedRealtimeMs: Long? = null,
     val lastLifecycleResponse: String = "No lifecycle action submitted",
     val taskRemovedWhileRunning: Boolean = false,
+    val identityFingerprint: String? = null,
 ) {
     val uptimeMs: Long
         get() = startedAtElapsedRealtimeMs
@@ -25,10 +26,26 @@ data class NodeUiState(
             ?: 0
 }
 
+data class StorageUiState(
+    val available: Boolean = false,
+    val detail: String = "Storage has not been measured",
+    val persistentBytes: Long = 0,
+    val temporaryBytes: Long = 0,
+    val identityBytes: Long = 0,
+    val totalBytes: Long = 0,
+    val identityFingerprint: String? = null,
+    val identityOwnerOnly: Boolean = false,
+    val secretMaterialInLogs: Boolean = false,
+    val layoutReady: Boolean = false,
+    val prototypeKeySecurityDebt: Boolean = true,
+)
+
 object NodeRepository {
     private val mutableState = MutableStateFlow(NodeUiState())
+    private val mutableStorageState = MutableStateFlow(StorageUiState())
 
     val state: StateFlow<NodeUiState> = mutableState.asStateFlow()
+    val storageState: StateFlow<StorageUiState> = mutableStorageState.asStateFlow()
 
     fun startLocal(context: Context) {
         val appContext = context.applicationContext
@@ -96,6 +113,7 @@ object NodeRepository {
             mode = if (parsed.state == "RunningNetwork") "Network" else "Local",
             peers = 0,
             startedAtElapsedRealtimeMs = startedAtElapsedRealtimeMs,
+            identityFingerprint = parsed.identityFingerprint,
         )
         mutableState.value = next
         return next
@@ -162,12 +180,23 @@ object NodeRepository {
             startedAtElapsedRealtimeMs = null,
         )
     }
+
+    fun refreshStorage(context: Context) {
+        val response = NativeBridge.storageStatus(androidNodeConfigJson(context)).getOrElse {
+            mutableStorageState.value = StorageUiState(
+                detail = "JNI storage error: ${it.message ?: "unknown error"}",
+            )
+            return
+        }
+        mutableStorageState.value = parseStorageStatus(response)
+    }
 }
 
 internal data class NodeStatusSnapshot(
     val state: String,
     val detail: String,
     val completedStartCycles: Long,
+    val identityFingerprint: String?,
 )
 
 internal fun parseNodeStatus(response: String): NodeStatusSnapshot {
@@ -179,6 +208,7 @@ internal fun parseNodeStatus(response: String): NodeStatusSnapshot {
                 state = "Failed",
                 detail = error?.optString("message") ?: "Native status request failed",
                 completedStartCycles = 0,
+                identityFingerprint = null,
             )
         }
         val data = envelope.getJSONObject("data")
@@ -186,25 +216,63 @@ internal fun parseNodeStatus(response: String): NodeStatusSnapshot {
             state = data.optString("state", "Unknown"),
             detail = data.optString("detail", "No detail"),
             completedStartCycles = data.optLong("completedStartCycles"),
+            identityFingerprint = data.optionalString("identityFingerprint"),
         )
     }.getOrElse { error ->
-        NodeStatusSnapshot("Failed", error.message ?: response, 0)
+        NodeStatusSnapshot("Failed", error.message ?: response, 0, null)
     }
 }
 
+private fun parseStorageStatus(response: String): StorageUiState {
+    return runCatching {
+        val envelope = JSONObject(response)
+        if (!envelope.optBoolean("ok")) {
+            return@runCatching StorageUiState(
+                detail = envelope.optJSONObject("error")?.optString("message")
+                    ?: "Native storage measurement failed",
+            )
+        }
+        val data = envelope.getJSONObject("data")
+        StorageUiState(
+            available = true,
+            detail = "Android-private storage measured",
+            persistentBytes = data.optLong("persistentBytes"),
+            temporaryBytes = data.optLong("temporaryBytes"),
+            identityBytes = data.optLong("identityBytes"),
+            totalBytes = data.optLong("totalBytes"),
+            identityFingerprint = data.optionalString("identityFingerprint"),
+            identityOwnerOnly = data.optBoolean("identityOwnerOnly"),
+            secretMaterialInLogs = data.optBoolean("secretMaterialInLogs"),
+            layoutReady = data.optBoolean("layoutReady"),
+            prototypeKeySecurityDebt = data.optBoolean("prototypeKeySecurityDebt", true),
+        )
+    }.getOrElse { error ->
+        StorageUiState(detail = error.message ?: response)
+    }
+}
+
+private fun JSONObject.optionalString(name: String): String? =
+    if (isNull(name)) null else optString(name)
+
 internal fun androidNodeConfigJson(context: Context): String {
-    val dataRoot = File(context.noBackupFilesDir, "freenet")
+    val persistentRoot = File(context.filesDir, "freenet")
     return JSONObject()
         .put("filesDir", context.filesDir.absolutePath)
         .put("cacheDir", context.cacheDir.absolutePath)
         .put("noBackupFilesDir", context.noBackupFilesDir.absolutePath)
-        .put("databaseDirectory", File(dataRoot, "db/local").absolutePath)
-        .put("contractDirectory", File(dataRoot, "contracts/local").absolutePath)
+        .put("stateDirectory", File(persistentRoot, "state").absolutePath)
+        .put("databaseDirectory", File(persistentRoot, "database/local").absolutePath)
+        .put("contractDirectory", File(persistentRoot, "contracts/local").absolutePath)
         .put(
             "configurationDirectory",
             File(context.filesDir, "freenet/config").absolutePath,
         )
         .put("logDirectory", File(context.filesDir, "freenet/logs").absolutePath)
+        .put(
+            "identityDirectory",
+            File(context.noBackupFilesDir, "freenet/identity").absolutePath,
+        )
+        .put("temporaryDirectory", File(context.cacheDir, "freenet/temporary").absolutePath)
         .put("websocketPort", 7509)
         .toString()
 }

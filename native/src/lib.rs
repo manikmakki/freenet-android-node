@@ -83,6 +83,21 @@ pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeGetRecent
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeGetStorageStatus(
+    mut env: JNIEnv,
+    _class: JClass,
+    config_json: JString,
+) -> jstring {
+    jni_response(&mut env, |env| match env.get_string(&config_json) {
+        Ok(config) => node_runtime().storage_status(&config.to_string_lossy()),
+        Err(error) => jni_error_response(
+            "INVALID_CONFIG",
+            format!("Failed to read configJson from JNI: {error}"),
+        ),
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeRunContractProof(
     mut env: JNIEnv,
     _class: JClass,

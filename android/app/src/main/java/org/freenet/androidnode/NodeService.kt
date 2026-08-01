@@ -74,7 +74,7 @@ class NodeService : Service() {
             NodeRepository.publishLifecycleResponse(response)
             val status = NativeBridge.nodeStatus()
                 .map(::parseNodeStatus)
-                .getOrElse { NodeStatusSnapshot("Failed", it.message ?: response, 0) }
+                .getOrElse { NodeStatusSnapshot("Failed", it.message ?: response, 0, null) }
             NodeRepository.publishUnexpectedServiceDestruction(status)
         }
         if (foregroundStarted) {
@@ -111,7 +111,7 @@ class NodeService : Service() {
         if (!responseIsSuccessful(response)) {
             val nativeStatus = NativeBridge.nodeStatus()
                 .map(::parseNodeStatus)
-                .getOrElse { NodeStatusSnapshot("Failed", it.message ?: response, 0) }
+                .getOrElse { NodeStatusSnapshot("Failed", it.message ?: response, 0, null) }
             if (nativeStatus.state !in ACTIVE_NATIVE_STATES) {
                 NodeRepository.publishFailure(nativeStatus.detail, response)
                 shutdownCompleted = true
@@ -156,11 +156,11 @@ class NodeService : Service() {
         NodeRepository.publishLifecycleResponse(response)
 
         val deadline = SystemClock.elapsedRealtime() + SHUTDOWN_TIMEOUT_MS
-        var finalStatus = NodeStatusSnapshot("Stopping", "Waiting for native shutdown", 0)
+        var finalStatus = NodeStatusSnapshot("Stopping", "Waiting for native shutdown", 0, null)
         while (SystemClock.elapsedRealtime() < deadline) {
             val statusResponse = NativeBridge.nodeStatus().getOrElse { response }
             finalStatus = runCatching { parseNodeStatus(statusResponse) }
-                .getOrElse { NodeStatusSnapshot("Failed", it.message ?: statusResponse, 0) }
+                .getOrElse { NodeStatusSnapshot("Failed", it.message ?: statusResponse, 0, null) }
             NodeRepository.publishNativeStatus(
                 response = statusResponse,
                 serviceActive = true,
