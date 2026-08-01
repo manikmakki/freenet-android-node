@@ -830,7 +830,7 @@ mod tests {
             "contractDirectory": "/data/user/0/org.freenet.androidnode/no_backup/freenet/contracts/local",
             "configurationDirectory": "/data/user/0/org.freenet.androidnode/files/freenet/config",
             "logDirectory": "/data/user/0/org.freenet.androidnode/files/freenet/logs",
-            "websocketPort": 17509,
+            "websocketPort": 7509,
         })
         .to_string()
     }

@@ -1,10 +1,8 @@
 package org.freenet.androidnode
 
-import android.content.Context
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import java.io.File
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -16,10 +14,8 @@ class Phase4InstrumentedTest {
     @Test
     fun wasmContractRoundTripPersistsAcrossNodeRestart() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val config = androidNodeConfigJson(context)
-
         try {
-            assertEnvelopeOk(NativeBridge.startLocalNode(config).getOrThrow())
+            NodeRepository.startLocal(context)
             awaitNodeState("RunningLocal")
 
             assertEnvelopeOk(NativeBridge.runContractProof().getOrThrow())
@@ -28,9 +24,9 @@ class Phase4InstrumentedTest {
             assertTrue(execution.getLong("firstExecutionTimeUs") > 0)
             assertTrue(execution.getLong("subsequentExecutionTimeUs") > 0)
 
-            assertEnvelopeOk(NativeBridge.stopNode().getOrThrow())
+            NodeRepository.stop(context)
             awaitNodeState("Stopped")
-            assertEnvelopeOk(NativeBridge.startLocalNode(config).getOrThrow())
+            NodeRepository.startLocal(context)
             awaitNodeState("RunningLocal")
 
             assertEnvelopeOk(NativeBridge.verifyContractPersistence().getOrThrow())
@@ -39,7 +35,7 @@ class Phase4InstrumentedTest {
             assertTrue(persisted.getLong("persistenceReadTimeUs") > 0)
             Log.i(EVIDENCE_TAG, "PHASE4_RESULT ${persisted}")
         } finally {
-            NativeBridge.stopNode()
+            NodeRepository.stop(context)
             runCatching { awaitNodeState("Stopped") }
         }
     }
@@ -92,23 +88,6 @@ class Phase4InstrumentedTest {
             envelope.getBoolean("ok"),
         )
         return envelope.getJSONObject("data")
-    }
-
-    private fun androidNodeConfigJson(context: Context): String {
-        val dataRoot = File(context.noBackupFilesDir, "freenet")
-        return JSONObject()
-            .put("filesDir", context.filesDir.absolutePath)
-            .put("cacheDir", context.cacheDir.absolutePath)
-            .put("noBackupFilesDir", context.noBackupFilesDir.absolutePath)
-            .put("databaseDirectory", File(dataRoot, "db/local").absolutePath)
-            .put("contractDirectory", File(dataRoot, "contracts/local").absolutePath)
-            .put(
-                "configurationDirectory",
-                File(context.filesDir, "freenet/config").absolutePath,
-            )
-            .put("logDirectory", File(context.filesDir, "freenet/logs").absolutePath)
-            .put("websocketPort", 17509)
-            .toString()
     }
 
     private companion object {

@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Freenet Android Node</string>
+    <string name="node_notification_channel_name">Freenet node status</string>
+    <string name="node_notification_channel_description">Persistent status and controls for the user-enabled Freenet node</string>
+    <string name="node_notification_starting">Freenet node starting</string>
+    <string name="node_notification_running">Freenet node running</string>
+    <string name="node_notification_status">Mode: %1$s · Peers: %2$d · Uptime: %3$s</string>
+    <string name="pause_node">Pause</string>
+    <string name="stop_node">Stop</string>
 </resources>

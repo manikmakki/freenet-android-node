@@ -1,9 +1,14 @@
 package org.freenet.androidnode
 
-import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,17 +28,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import java.io.File
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
+    private val nodeViewModel: NodeViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    NativeBridgeScreen()
+                    NativeBridgeScreen(nodeViewModel)
                 }
             }
         }
@@ -40,8 +47,18 @@ class MainActivity : ComponentActivity() {
 }
 
 @androidx.compose.runtime.Composable
-private fun NativeBridgeScreen() {
+private fun NativeBridgeScreen(nodeViewModel: NodeViewModel) {
     val context = LocalContext.current
+    val serviceState by nodeViewModel.state.collectAsState()
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            nodeViewModel.startLocalNode()
+        } else {
+            nodeViewModel.reportNotificationPermissionRequired()
+        }
+    }
     val buildInfo = remember {
         NativeBridge.buildInfo().fold(
             onSuccess = { it },
@@ -55,29 +72,12 @@ private fun NativeBridgeScreen() {
         )
     }
     var testResult by remember { mutableStateOf("Not run") }
-    var nodeState by remember { mutableStateOf("Unknown") }
-    var nodeDetail by remember { mutableStateOf("Waiting for native status") }
-    var completedStartCycles by remember { mutableStateOf(0L) }
-    var actionResult by remember { mutableStateOf("No lifecycle action submitted") }
     var recentLogs by remember { mutableStateOf("No logs requested") }
     var contractProof by remember { mutableStateOf(ContractUiStatus.idle()) }
     var contractActionResult by remember { mutableStateOf("No contract proof action submitted") }
 
     LaunchedEffect(Unit) {
         while (true) {
-            NativeBridge.nodeStatus().fold(
-                onSuccess = { response ->
-                    parseStatus(response).also { status ->
-                        nodeState = status.state
-                        nodeDetail = status.detail
-                        completedStartCycles = status.completedStartCycles
-                    }
-                },
-                onFailure = { error ->
-                    nodeState = "Unavailable"
-                    nodeDetail = error.message ?: "unknown status error"
-                },
-            )
             NativeBridge.contractProofStatus().fold(
                 onSuccess = { response -> contractProof = parseContractProofStatus(response) },
                 onFailure = { error ->
@@ -110,9 +110,10 @@ private fun NativeBridgeScreen() {
         )
         Text(text = "Native version: $buildInfo")
         Text(text = freenetBuildInfo)
-        Text(text = "Node state: $nodeState")
-        Text(text = "Node detail: $nodeDetail")
-        Text(text = "Completed start cycles: $completedStartCycles")
+        Text(text = "Node state: ${serviceState.state}")
+        Text(text = "Node detail: ${serviceState.detail}")
+        Text(text = "Service active: ${serviceState.serviceActive}")
+        Text(text = "Completed start cycles: ${serviceState.completedStartCycles}")
         Text(text = "Contract proof state: ${contractProof.state}")
         Text(text = "Contract proof detail: ${contractProof.detail}")
         Text(text = "Contract fixture: ${contractProof.fixtureName}")
@@ -120,26 +121,32 @@ private fun NativeBridgeScreen() {
         Text(text = "Contract result: ${contractProof.result ?: "Not available"}")
         Text(text = "Persistence verified: ${contractProof.persistenceVerified}")
         Text(text = contractProof.metricsText())
-        Text(text = "Last lifecycle response: $actionResult")
+        Text(text = "Last lifecycle response: ${serviceState.lastLifecycleResponse}")
         Button(
             enabled = NativeBridge.isLoaded,
             onClick = {
-                actionResult = NativeBridge.startLocalNode(androidNodeConfigJson(context)).fold(
-                    onSuccess = { it },
-                    onFailure = { "JNI error: ${it.message ?: "unknown error"}" },
-                )
+                if (
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    nodeViewModel.startLocalNode()
+                }
             },
         ) {
             Text("Start local node")
         }
         Button(
+            enabled = NativeBridge.isLoaded && serviceState.serviceActive,
+            onClick = nodeViewModel::pauseNode,
+        ) {
+            Text("Pause node")
+        }
+        Button(
             enabled = NativeBridge.isLoaded,
-            onClick = {
-                actionResult = NativeBridge.stopNode().fold(
-                    onSuccess = { it },
-                    onFailure = { "JNI error: ${it.message ?: "unknown error"}" },
-                )
-            },
+            onClick = nodeViewModel::stopNode,
         ) {
             Text("Stop node")
         }
@@ -235,34 +242,6 @@ private data class ContractUiStatus(
     }
 }
 
-private data class NodeUiStatus(
-    val state: String,
-    val detail: String,
-    val completedStartCycles: Long,
-)
-
-private fun parseStatus(response: String): NodeUiStatus {
-    return runCatching {
-        val envelope = JSONObject(response)
-        if (!envelope.optBoolean("ok")) {
-            val error = envelope.optJSONObject("error")
-            return@runCatching NodeUiStatus(
-                state = "Error",
-                detail = error?.optString("message") ?: "Native status request failed",
-                completedStartCycles = 0,
-            )
-        }
-        val data = envelope.getJSONObject("data")
-        NodeUiStatus(
-            state = data.optString("state", "Unknown"),
-            detail = data.optString("detail", "No detail"),
-            completedStartCycles = data.optLong("completedStartCycles"),
-        )
-    }.getOrElse { error ->
-        NodeUiStatus("Invalid response", error.message ?: response, 0)
-    }
-}
-
 private fun parseContractProofStatus(response: String): ContractUiStatus {
     return runCatching {
         val envelope = JSONObject(response)
@@ -298,20 +277,3 @@ private fun JSONObject.optionalString(name: String): String? =
     if (isNull(name)) null else optString(name)
 
 private fun Long?.displayMicros(): String = this?.let { "$it µs" } ?: "pending"
-
-private fun androidNodeConfigJson(context: Context): String {
-    val dataRoot = File(context.noBackupFilesDir, "freenet")
-    return JSONObject()
-        .put("filesDir", context.filesDir.absolutePath)
-        .put("cacheDir", context.cacheDir.absolutePath)
-        .put("noBackupFilesDir", context.noBackupFilesDir.absolutePath)
-        .put("databaseDirectory", File(dataRoot, "db/local").absolutePath)
-        .put("contractDirectory", File(dataRoot, "contracts/local").absolutePath)
-        .put(
-            "configurationDirectory",
-            File(context.filesDir, "freenet/config").absolutePath,
-        )
-        .put("logDirectory", File(context.filesDir, "freenet/logs").absolutePath)
-        .put("websocketPort", 17509)
-        .toString()
-}

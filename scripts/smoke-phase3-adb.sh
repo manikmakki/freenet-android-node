@@ -37,10 +37,17 @@ screen_contains() {
     rg -Fq "text=\"${expected}\"" "${ui_dump}"
 }
 
+scroll_to_top() {
+    for _ in {1..8}; do
+        adb_device shell input swipe 540 550 540 1850 120
+    done
+}
+
 wait_for_text() {
     local expected="$1"
     local attempts="${2:-30}"
 
+    scroll_to_top
     for ((attempt = 1; attempt <= attempts; attempt++)); do
         dump_ui
         if screen_contains "${expected}"; then
@@ -59,10 +66,14 @@ wait_for_fragment() {
     local attempts="${2:-10}"
 
     for ((attempt = 1; attempt <= attempts; attempt++)); do
-        dump_ui
-        if rg -Fq "${expected}" "${ui_dump}"; then
-            return 0
-        fi
+        scroll_to_top
+        for _ in {1..8}; do
+            dump_ui
+            if rg -Fq "${expected}" "${ui_dump}"; then
+                return 0
+            fi
+            adb_device shell input swipe 540 1850 540 550 180
+        done
         sleep 0.25
     done
 
@@ -99,6 +110,7 @@ tap_button() {
 }
 
 adb_device get-state >/dev/null
+adb_device shell am force-stop "${package_name}"
 adb_device shell input keyevent KEYCODE_WAKEUP
 adb_device shell wm dismiss-keyguard
 adb_device shell am start -W -n "${activity_name}" >/dev/null

@@ -94,6 +94,32 @@ structured native status envelope and also exposes recent adapter lifecycle
 logs. App-private configuration and logs use `filesDir`, while the redb node
 state uses `noBackupFilesDir`.
 
+The Android node uses Freenet's conventional client API port, `7509`. To open
+the running node's dashboard from the development host, forward that port over
+ADB and visit `http://127.0.0.1:7509/`:
+
+```bash
+adb forward tcp:7509 tcp:7509
+```
+
+The dashboard is available in local mode, but resources hosted by other nodes
+remain unavailable until the Android node is running in network mode and has
+connected peers.
+
+The node lifecycle is owned by `NodeService`, a non-sticky Android foreground
+service started only by an explicit user action. Its persistent notification
+reports mode, peer count, and uptime, and provides **Pause** and **Stop**
+actions. For this prototype, Pause performs a graceful native shutdown and
+records an Android-visible `Paused` state; Start explicitly resumes it.
+
+Removing the Activity from Recents does not stop the foreground service. A
+notification Stop or Pause performs cooperative shutdown and then removes the
+service. Android process death or force-stop removes the service and does not
+restart it automatically; the native database is reopened on the next explicit
+start. The `specialUse` foreground-service declaration is an engineering choice
+for this user-visible peer-to-peer workload and still requires distribution
+policy review before any public-store release.
+
 Run the repeatable Phase 3 physical-device soak from the host:
 
 ```bash
@@ -102,6 +128,16 @@ ADB_SERIAL=<device-serial> PHASE3_CYCLES=20 scripts/smoke-phase3-adb.sh
 
 The script leaves the node stopped. It verifies controlled duplicate Stop and
 Start behavior, then waits for `RunningLocal` and `Stopped` on every cycle.
+
+Run the repeatable Phase 5 physical-device lifecycle proof from the host:
+
+```bash
+ADB_SERIAL=<device-serial> scripts/smoke-phase5-adb.sh
+```
+
+This verifies the foreground notification and its Pause/Stop actions, removes
+the Activity task, turns the screen off, checks non-sticky behavior, force-stops
+the process while the node is live, and then proves a clean explicit restart.
 
 ## Run the Phase 4 contract proof
 
