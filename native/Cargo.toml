@@ -24,6 +24,9 @@ freenet-websocket = ["freenet/websocket"]
 [dependencies]
 freenet = { path = "../../freenet-core/crates/core", default-features = false }
 jni = { version = "0.21.1", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

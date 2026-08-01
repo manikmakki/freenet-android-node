@@ -98,6 +98,32 @@ patches. No keyring, signal, process-spawning, hostname, notification, socket,
 or C/C++ compilation failure was reproduced in this phase. Runtime use of
 those subsystems remains untested until later phases actually start a node.
 
+## Phase 3 local-node runtime
+
+The Android adapter now mirrors the upstream local CLI initialization path:
+`ConfigArgs` in local mode, `Executor::from_config_local`, and
+`freenet::run_local_node`. Android supplies every filesystem root explicitly.
+The adapter validates that Freenet's derived redb and contract directories
+exactly match the app-private paths before opening the executor. No desktop
+home directory is inferred.
+
+Local-node shutdown has an upstream API asymmetry. Network mode exposes a
+`ShutdownHandle`, but `run_local_node` does not. The adapter therefore selects
+the local-node future against its own cooperative stop channel. On Stop it
+drops the local-node future, whose owned WebSocket server guards tear down the
+server tasks, and then gives the owned Tokio runtime up to five seconds to
+release remaining tasks and the redb executor. It does not use task abort,
+process exit, or process termination. This adapter-level lifetime solution was
+sufficient for Phase 3, so no Freenet core API change or issue was required.
+
+On the OnePlus IN2017 ARM64 device, API 33, the final APK completed 20
+consecutive `Stopped -> Starting -> RunningLocal -> Stopping -> Stopped`
+cycles against the same app-private redb file. The file remained present and
+reopened on each start. Duplicate Start returned `NODE_ALREADY_RUNNING` and
+duplicate Stop returned a successful structured `Stopped` envelope. No fatal
+exception, native crash, or ANR appeared in the app process log after the
+soak.
+
 ## Blocker template
 
 ```text

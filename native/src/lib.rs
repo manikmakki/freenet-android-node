@@ -2,8 +2,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
 use jni::JNIEnv;
-use jni::objects::JClass;
-use jni::sys::jstring;
+use jni::objects::{JClass, JString};
+use jni::sys::{jint, jstring};
+
+mod runtime;
+
+use runtime::{jni_error_response, node_runtime};
 
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const FREENET_CORE_VERSION: &str = env!("FREENET_CORE_VERSION");
@@ -35,6 +39,46 @@ pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeFreenetBu
     _class: JClass,
 ) -> jstring {
     jni_string(&mut env, freenet_build_info)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeStartLocalNode(
+    mut env: JNIEnv,
+    _class: JClass,
+    config_json: JString,
+) -> jstring {
+    jni_response(&mut env, |env| match env.get_string(&config_json) {
+        Ok(config) => node_runtime().start_local(&config.to_string_lossy()),
+        Err(error) => jni_error_response(
+            "INVALID_CONFIG",
+            format!("Failed to read configJson from JNI: {error}"),
+        ),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeStopNode(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    jni_response(&mut env, |_| node_runtime().stop())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeGetNodeStatus(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    jni_response(&mut env, |_| node_runtime().status())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeGetRecentLogs(
+    mut env: JNIEnv,
+    _class: JClass,
+    max_entries: jint,
+) -> jstring {
+    jni_response(&mut env, |_| node_runtime().recent_logs(max_entries))
 }
 
 fn freenet_build_info() -> String {
@@ -76,6 +120,22 @@ where
             Ok(output) => output.into_raw(),
             Err(_) => ptr::null_mut(),
         },
+    }
+}
+
+fn jni_response<F>(env: &mut JNIEnv, value: F) -> jstring
+where
+    F: FnOnce(&mut JNIEnv) -> String,
+{
+    let response = catch_unwind(AssertUnwindSafe(|| value(env))).unwrap_or_else(|_| {
+        jni_error_response(
+            "NATIVE_PANIC",
+            "A Rust panic reached the JNI boundary and was contained",
+        )
+    });
+    match env.new_string(response) {
+        Ok(output) => output.into_raw(),
+        Err(_) => ptr::null_mut(),
     }
 }
 
