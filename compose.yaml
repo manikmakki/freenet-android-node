@@ -5,6 +5,7 @@ services:
     image: freenet-android-node-dev:local
     working_dir: /workspace/freenet-android-node
     environment:
+      ANDROID_USER_HOME: /workspace/cache/gradle/android-user
       CARGO_TARGET_DIR: /workspace/target/cargo
       GRADLE_USER_HOME: /workspace/cache/gradle
     volumes:

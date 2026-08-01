@@ -15,9 +15,13 @@ object NativeBridge {
 
     external fun nativeBuildInfo(): String
 
+    external fun nativeFreenetBuildInfo(): String
+
     fun ping(): Result<String> = withLoadedLibrary(::nativePing)
 
     fun buildInfo(): Result<String> = withLoadedLibrary(::nativeBuildInfo)
+
+    fun freenetBuildInfo(): Result<String> = withLoadedLibrary(::nativeFreenetBuildInfo)
 
     private inline fun <T> withLoadedLibrary(block: () -> T): Result<T> {
         return loadResult.fold(

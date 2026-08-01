@@ -6,6 +6,7 @@ use jni::objects::JClass;
 use jni::sys::jstring;
 
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const FREENET_CORE_VERSION: &str = env!("FREENET_CORE_VERSION");
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativePing(
@@ -26,6 +27,40 @@ pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeBuildInfo
             android_target_name()
         )
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeFreenetBuildInfo(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    jni_string(&mut env, freenet_build_info)
+}
+
+fn freenet_build_info() -> String {
+    let transport_generation = freenet::transport::version_mismatch_generation();
+    format!(
+        "Freenet core {FREENET_CORE_VERSION}; features: {}; default gateway port: {}; transport generation: {transport_generation}",
+        freenet_features(),
+        freenet::config::DEFAULT_GATEWAY_PORT,
+    )
+}
+
+fn freenet_features() -> String {
+    let mut features = Vec::new();
+    if cfg!(feature = "freenet-redb") {
+        features.push("redb");
+    }
+    if cfg!(feature = "freenet-trace") {
+        features.push("trace");
+    }
+    if cfg!(feature = "freenet-wasmtime") {
+        features.push("wasmtime-backend");
+    }
+    if cfg!(feature = "freenet-websocket") {
+        features.push("websocket");
+    }
+    features.join(", ")
 }
 
 fn jni_string<F>(env: &mut JNIEnv, value: F) -> jstring
@@ -61,11 +96,22 @@ fn android_target_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{BRIDGE_VERSION, android_target_name};
+    use super::{BRIDGE_VERSION, FREENET_CORE_VERSION, android_target_name, freenet_build_info};
 
     #[test]
     fn build_metadata_is_not_empty() {
         assert_eq!(BRIDGE_VERSION, "0.1.0");
         assert!(!android_target_name().is_empty());
+    }
+
+    #[test]
+    fn freenet_metadata_comes_from_the_linked_core_build() {
+        let info = freenet_build_info();
+
+        assert!(!FREENET_CORE_VERSION.is_empty());
+        assert!(info.contains(&format!("Freenet core {FREENET_CORE_VERSION}")));
+        assert!(info.contains("wasmtime-backend"));
+        assert!(info.contains("default gateway port: 31337"));
+        assert!(info.contains("transport generation: 0"));
     }
 }

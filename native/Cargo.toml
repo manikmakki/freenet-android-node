@@ -9,7 +9,20 @@ publish = false
 name = "freenet_android"
 crate-type = ["cdylib"]
 
+[features]
+default = [
+    "freenet-redb",
+    "freenet-trace",
+    "freenet-wasmtime",
+    "freenet-websocket",
+]
+freenet-redb = ["freenet/redb"]
+freenet-trace = ["freenet/trace"]
+freenet-wasmtime = ["freenet/wasmtime-backend"]
+freenet-websocket = ["freenet/websocket"]
+
 [dependencies]
+freenet = { path = "../../freenet-core/crates/core", default-features = false }
 jni = { version = "0.21.1", default-features = false }
 
 [lints.rust]

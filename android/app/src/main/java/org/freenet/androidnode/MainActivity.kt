@@ -39,6 +39,12 @@ private fun NativeBridgeScreen() {
             onFailure = { "Unavailable: ${it.message ?: "unknown error"}" },
         )
     }
+    val freenetBuildInfo = remember {
+        NativeBridge.freenetBuildInfo().fold(
+            onSuccess = { it },
+            onFailure = { "Unavailable: ${it.message ?: "unknown error"}" },
+        )
+    }
     var testResult by remember { mutableStateOf("Not run") }
 
     Column(
@@ -59,6 +65,7 @@ private fun NativeBridgeScreen() {
             },
         )
         Text(text = "Native version: $buildInfo")
+        Text(text = freenetBuildInfo)
         Text(text = "Native test: $testResult")
         Button(
             enabled = NativeBridge.isLoaded,
