@@ -25,6 +25,12 @@ object NativeBridge {
 
     external fun nativeGetRecentLogs(maxEntries: Int): String
 
+    external fun nativeRunContractProof(): String
+
+    external fun nativeVerifyContractPersistence(): String
+
+    external fun nativeGetContractProofStatus(): String
+
     fun ping(): Result<String> = withLoadedLibrary(::nativePing)
 
     fun buildInfo(): Result<String> = withLoadedLibrary(::nativeBuildInfo)
@@ -40,6 +46,14 @@ object NativeBridge {
 
     fun recentLogs(maxEntries: Int): Result<String> =
         withLoadedLibrary { nativeGetRecentLogs(maxEntries) }
+
+    fun runContractProof(): Result<String> = withLoadedLibrary(::nativeRunContractProof)
+
+    fun verifyContractPersistence(): Result<String> =
+        withLoadedLibrary(::nativeVerifyContractPersistence)
+
+    fun contractProofStatus(): Result<String> =
+        withLoadedLibrary(::nativeGetContractProofStatus)
 
     private inline fun <T> withLoadedLibrary(block: () -> T): Result<T> {
         return loadResult.fold(

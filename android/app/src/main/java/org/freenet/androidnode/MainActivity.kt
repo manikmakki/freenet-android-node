@@ -60,6 +60,8 @@ private fun NativeBridgeScreen() {
     var completedStartCycles by remember { mutableStateOf(0L) }
     var actionResult by remember { mutableStateOf("No lifecycle action submitted") }
     var recentLogs by remember { mutableStateOf("No logs requested") }
+    var contractProof by remember { mutableStateOf(ContractUiStatus.idle()) }
+    var contractActionResult by remember { mutableStateOf("No contract proof action submitted") }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -74,6 +76,14 @@ private fun NativeBridgeScreen() {
                 onFailure = { error ->
                     nodeState = "Unavailable"
                     nodeDetail = error.message ?: "unknown status error"
+                },
+            )
+            NativeBridge.contractProofStatus().fold(
+                onSuccess = { response -> contractProof = parseContractProofStatus(response) },
+                onFailure = { error ->
+                    contractProof = ContractUiStatus.unavailable(
+                        error.message ?: "unknown contract-proof status error",
+                    )
                 },
             )
             delay(250)
@@ -103,6 +113,13 @@ private fun NativeBridgeScreen() {
         Text(text = "Node state: $nodeState")
         Text(text = "Node detail: $nodeDetail")
         Text(text = "Completed start cycles: $completedStartCycles")
+        Text(text = "Contract proof state: ${contractProof.state}")
+        Text(text = "Contract proof detail: ${contractProof.detail}")
+        Text(text = "Contract fixture: ${contractProof.fixtureName}")
+        Text(text = "Contract key: ${contractProof.contractKey ?: "Not created"}")
+        Text(text = "Contract result: ${contractProof.result ?: "Not available"}")
+        Text(text = "Persistence verified: ${contractProof.persistenceVerified}")
+        Text(text = contractProof.metricsText())
         Text(text = "Last lifecycle response: $actionResult")
         Button(
             enabled = NativeBridge.isLoaded,
@@ -129,6 +146,29 @@ private fun NativeBridgeScreen() {
         Button(
             enabled = NativeBridge.isLoaded,
             onClick = {
+                contractActionResult = NativeBridge.runContractProof().fold(
+                    onSuccess = { it },
+                    onFailure = { "JNI error: ${it.message ?: "unknown error"}" },
+                )
+            },
+        ) {
+            Text("Run WASM contract proof")
+        }
+        Button(
+            enabled = NativeBridge.isLoaded,
+            onClick = {
+                contractActionResult = NativeBridge.verifyContractPersistence().fold(
+                    onSuccess = { it },
+                    onFailure = { "JNI error: ${it.message ?: "unknown error"}" },
+                )
+            },
+        ) {
+            Text("Verify contract persistence")
+        }
+        Text(text = "Last contract response: $contractActionResult")
+        Button(
+            enabled = NativeBridge.isLoaded,
+            onClick = {
                 recentLogs = NativeBridge.recentLogs(12).fold(
                     onSuccess = { it },
                     onFailure = { "JNI error: ${it.message ?: "unknown error"}" },
@@ -150,6 +190,48 @@ private fun NativeBridgeScreen() {
         ) {
             Text("Run native test")
         }
+    }
+}
+
+private data class ContractUiStatus(
+    val state: String,
+    val detail: String,
+    val fixtureName: String,
+    val contractKey: String?,
+    val result: String?,
+    val persistenceVerified: Boolean,
+    val contractLoadTimeUs: Long?,
+    val firstExecutionTimeUs: Long?,
+    val subsequentExecutionTimeUs: Long?,
+    val persistenceReadTimeUs: Long?,
+    val peakResidentSetKb: Long?,
+) {
+    fun metricsText(): String =
+        "Contract metrics: load=${contractLoadTimeUs.displayMicros()}, " +
+            "first=${firstExecutionTimeUs.displayMicros()}, " +
+            "subsequent=${subsequentExecutionTimeUs.displayMicros()}, " +
+            "restart read=${persistenceReadTimeUs.displayMicros()}, " +
+            "peak RSS=${peakResidentSetKb?.let { "$it KiB" } ?: "pending"}"
+
+    companion object {
+        fun idle(): ContractUiStatus = ContractUiStatus(
+            state = "Unknown",
+            detail = "Waiting for native contract-proof status",
+            fixtureName = "Unknown",
+            contractKey = null,
+            result = null,
+            persistenceVerified = false,
+            contractLoadTimeUs = null,
+            firstExecutionTimeUs = null,
+            subsequentExecutionTimeUs = null,
+            persistenceReadTimeUs = null,
+            peakResidentSetKb = null,
+        )
+
+        fun unavailable(detail: String): ContractUiStatus = idle().copy(
+            state = "Unavailable",
+            detail = detail,
+        )
     }
 }
 
@@ -180,6 +262,42 @@ private fun parseStatus(response: String): NodeUiStatus {
         NodeUiStatus("Invalid response", error.message ?: response, 0)
     }
 }
+
+private fun parseContractProofStatus(response: String): ContractUiStatus {
+    return runCatching {
+        val envelope = JSONObject(response)
+        if (!envelope.optBoolean("ok")) {
+            return@runCatching ContractUiStatus.unavailable(
+                envelope.optJSONObject("error")?.optString("message")
+                    ?: "Native contract-proof status request failed",
+            )
+        }
+        val data = envelope.getJSONObject("data")
+        ContractUiStatus(
+            state = data.optString("state", "Unknown"),
+            detail = data.optString("detail", "No detail"),
+            fixtureName = data.optString("fixtureName", "Unknown"),
+            contractKey = data.optionalString("contractKey"),
+            result = data.optionalString("result"),
+            persistenceVerified = data.optBoolean("persistenceVerified"),
+            contractLoadTimeUs = data.optionalLong("contractLoadTimeUs"),
+            firstExecutionTimeUs = data.optionalLong("firstExecutionTimeUs"),
+            subsequentExecutionTimeUs = data.optionalLong("subsequentExecutionTimeUs"),
+            persistenceReadTimeUs = data.optionalLong("persistenceReadTimeUs"),
+            peakResidentSetKb = data.optionalLong("peakResidentSetKb"),
+        )
+    }.getOrElse { error ->
+        ContractUiStatus.unavailable(error.message ?: response)
+    }
+}
+
+private fun JSONObject.optionalLong(name: String): Long? =
+    if (isNull(name)) null else optLong(name)
+
+private fun JSONObject.optionalString(name: String): String? =
+    if (isNull(name)) null else optString(name)
+
+private fun Long?.displayMicros(): String = this?.let { "$it µs" } ?: "pending"
 
 private fun androidNodeConfigJson(context: Context): String {
     val dataRoot = File(context.noBackupFilesDir, "freenet")

@@ -1,9 +1,10 @@
 # Freenet Android Node
 
 An engineering prototype for embedding Freenet in an Android application. The
-current Phase 3 implementation starts and stops a redb-backed Freenet local
-node through a narrow JNI runtime adapter. Foreground-service and contract
-execution work intentionally remain behind their later phase gates.
+current Phase 4 implementation starts and stops a redb-backed Freenet local
+node and executes a real Freenet WASM contract through its supported WebSocket
+client API. Network-node and foreground-service work intentionally remain
+behind their later phase gates.
 
 ## Prerequisites
 
@@ -41,7 +42,9 @@ The build writes host-visible artifacts to:
 
 ```text
 artifacts/
-├── apk/freenet-android-node-debug.apk
+├── apk/
+│   ├── freenet-android-node-debug.apk
+│   └── freenet-android-node-debug-androidTest.apk
 └── native/
     ├── arm64-v8a/libfreenet_android.so
     └── x86_64/libfreenet_android.so
@@ -100,6 +103,27 @@ ADB_SERIAL=<device-serial> PHASE3_CYCLES=20 scripts/smoke-phase3-adb.sh
 The script leaves the node stopped. It verifies controlled duplicate Stop and
 Start behavior, then waits for `RunningLocal` and `Stopped` on every cycle.
 
+## Run the Phase 4 contract proof
+
+The app exposes **Run WASM contract proof** and **Verify contract persistence**
+for manual testing. The reproducible gate uses Android instrumentation so it
+does not depend on screen, keyguard, or Compose scroll state:
+
+```bash
+ADB_SERIAL=<device-serial> scripts/smoke-phase4-adb.sh
+```
+
+The script installs the checksum-tracked main and instrumentation APKs, runs a
+PUT/GET/UPDATE/GET round-trip with Freenet core's existing
+`test-contract-mock-aligned` fixture, restarts the node, verifies the exact
+updated state, prints timing and peak-RSS evidence, and leaves the node stopped.
+
+Rebuild the packaged upstream fixture from the recorded Freenet baseline with:
+
+```bash
+docker compose run --rm dev scripts/prepare-contract-fixture.sh
+```
+
 ## Freenet feature selection
 
 The adapter disables Freenet's implicit defaults and selects the required set
@@ -137,4 +161,5 @@ See [`docs/BASELINE.md`](docs/BASELINE.md),
 record in [`docs/adr/0001-embed-freenet-with-jni.md`](docs/adr/0001-embed-freenet-with-jni.md).
 The gate results are in [`docs/PHASE_0_1_REPORT.md`](docs/PHASE_0_1_REPORT.md),
 [`docs/PHASE_2_REPORT.md`](docs/PHASE_2_REPORT.md), and
-[`docs/PHASE_3_REPORT.md`](docs/PHASE_3_REPORT.md).
+[`docs/PHASE_3_REPORT.md`](docs/PHASE_3_REPORT.md), and
+[`docs/PHASE_4_REPORT.md`](docs/PHASE_4_REPORT.md).

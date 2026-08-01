@@ -11,6 +11,10 @@ use freenet::local_node::{Executor, OperationMode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::contract_proof::{
+    self, ContractProofResult, ContractProofState, ContractProofStatus, PersistenceResult,
+};
+
 const LOG_CAPACITY: usize = 256;
 const STARTUP_PROBE_INTERVAL: Duration = Duration::from_millis(50);
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -232,10 +236,13 @@ struct LogData {
 
 enum NodeCommand {
     Stop,
+    RunContractProof { proof_run_id: String },
+    VerifyContractPersistence { proof_run_id: String },
 }
 
 struct RuntimeInner {
     status: NodeStatus,
+    contract_proof: ContractProofStatus,
     command_tx: Option<mpsc::UnboundedSender<NodeCommand>>,
 }
 
@@ -254,6 +261,7 @@ impl NodeRuntime {
             shared: Arc::new(SharedRuntime {
                 inner: Mutex::new(RuntimeInner {
                     status: NodeStatus::stopped(),
+                    contract_proof: ContractProofStatus::idle(),
                     command_tx: None,
                 }),
                 logs: Mutex::new(VecDeque::with_capacity(LOG_CAPACITY)),
@@ -355,6 +363,98 @@ impl NodeRuntime {
         success_response(lock_recover(&self.shared.inner).status.clone())
     }
 
+    pub(crate) fn run_contract_proof(&self) -> String {
+        let proof_run_id = format!("run-{}", unix_time_ms());
+        let mut inner = lock_recover(&self.shared.inner);
+        if inner.status.state != NodeState::RunningLocal {
+            return error_response(NodeError::new(
+                "NODE_NOT_RUNNING_LOCAL",
+                "The contract proof requires a RunningLocal node",
+            ));
+        }
+        if inner.contract_proof.state.is_active() {
+            return error_response(NodeError::new(
+                "CONTRACT_PROOF_ALREADY_RUNNING",
+                "A contract proof operation is already running",
+            ));
+        }
+        inner.contract_proof = ContractProofStatus::queued(proof_run_id.clone(), false);
+        let proof_status = inner.contract_proof.clone();
+        let sent = inner.command_tx.as_ref().is_some_and(|sender| {
+            sender
+                .send(NodeCommand::RunContractProof { proof_run_id })
+                .is_ok()
+        });
+        if !sent {
+            inner.contract_proof.state = ContractProofState::Failed;
+            inner.contract_proof.detail =
+                "The native node command channel is unavailable".to_owned();
+            return error_response(NodeError::new(
+                "NODE_COMMAND_UNAVAILABLE",
+                inner.contract_proof.detail.clone(),
+            ));
+        }
+        drop(inner);
+        self.shared
+            .log("INFO", "Queued the Android WASM contract round-trip proof");
+        success_response(proof_status)
+    }
+
+    pub(crate) fn verify_contract_persistence(&self) -> String {
+        let mut inner = lock_recover(&self.shared.inner);
+        if inner.status.state != NodeState::RunningLocal {
+            return error_response(NodeError::new(
+                "NODE_NOT_RUNNING_LOCAL",
+                "The persistence proof requires a RunningLocal node",
+            ));
+        }
+        if inner.contract_proof.state.is_active() {
+            return error_response(NodeError::new(
+                "CONTRACT_PROOF_ALREADY_RUNNING",
+                "A contract proof operation is already running",
+            ));
+        }
+        if inner.contract_proof.state != ContractProofState::Succeeded {
+            return error_response(NodeError::new(
+                "CONTRACT_PROOF_NOT_READY",
+                "Complete the contract round-trip before verifying persistence",
+            ));
+        }
+        let Some(proof_run_id) = inner.contract_proof.proof_run_id.clone() else {
+            return error_response(NodeError::new(
+                "CONTRACT_PROOF_NOT_READY",
+                "The completed contract proof has no proof run identifier",
+            ));
+        };
+
+        let previous = inner.contract_proof.clone();
+        inner.contract_proof.state = ContractProofState::Queued;
+        inner.contract_proof.detail =
+            "The post-restart persisted contract-state GET is queued".to_owned();
+        inner.contract_proof.persistence_verified = false;
+        let proof_status = inner.contract_proof.clone();
+        let sent = inner.command_tx.as_ref().is_some_and(|sender| {
+            sender
+                .send(NodeCommand::VerifyContractPersistence { proof_run_id })
+                .is_ok()
+        });
+        if !sent {
+            inner.contract_proof = previous;
+            return error_response(NodeError::new(
+                "NODE_COMMAND_UNAVAILABLE",
+                "The native node command channel is unavailable",
+            ));
+        }
+        drop(inner);
+        self.shared
+            .log("INFO", "Queued the post-restart contract persistence proof");
+        success_response(proof_status)
+    }
+
+    pub(crate) fn contract_proof_status(&self) -> String {
+        success_response(lock_recover(&self.shared.inner).contract_proof.clone())
+    }
+
     pub(crate) fn recent_logs(&self, max_entries: i32) -> String {
         if max_entries <= 0 {
             return error_response(NodeError::new(
@@ -407,6 +507,11 @@ impl SharedRuntime {
         inner.status.detail = "The local node stopped and released its runtime".to_owned();
         inner.status.websocket_port = None;
         inner.status.transition_time_ms = unix_time_ms();
+        if inner.contract_proof.state.is_active() {
+            inner.contract_proof.state = ContractProofState::Failed;
+            inner.contract_proof.detail =
+                "The local node stopped before the contract proof completed".to_owned();
+        }
         drop(inner);
         self.log("INFO", "Local node shutdown completed");
     }
@@ -418,8 +523,79 @@ impl SharedRuntime {
         inner.status.detail = message.clone();
         inner.status.websocket_port = None;
         inner.status.transition_time_ms = unix_time_ms();
+        if inner.contract_proof.state.is_active() {
+            inner.contract_proof.state = ContractProofState::Failed;
+            inner.contract_proof.detail =
+                "The local node failed before the contract proof completed".to_owned();
+        }
         drop(inner);
         self.log("ERROR", message);
+    }
+
+    fn mark_contract_proof_running(&self, persistence_check: bool) {
+        let mut inner = lock_recover(&self.inner);
+        inner.contract_proof.state = ContractProofState::Running;
+        inner.contract_proof.detail = if persistence_check {
+            "Reading the stored contract state after the node restart"
+        } else {
+            "Executing the upstream WASM fixture through the local-node WebSocket API"
+        }
+        .to_owned();
+    }
+
+    fn finish_contract_proof(&self, outcome: Result<ContractProofResult, String>) {
+        let mut inner = lock_recover(&self.inner);
+        match outcome {
+            Ok(result) => {
+                inner.contract_proof.state = ContractProofState::Succeeded;
+                inner.contract_proof.detail =
+                    "WASM PUT, GET, UPDATE, and result GET all succeeded".to_owned();
+                inner.contract_proof.contract_key = Some(result.contract_key);
+                inner.contract_proof.contract_load_time_us = Some(result.contract_load_time_us);
+                inner.contract_proof.first_execution_time_us = Some(result.first_execution_time_us);
+                inner.contract_proof.subsequent_execution_time_us =
+                    Some(result.subsequent_execution_time_us);
+                inner.contract_proof.peak_resident_set_kb = result.peak_resident_set_kb;
+                inner.contract_proof.result = Some(result.result);
+                inner.contract_proof.persistence_verified = false;
+                drop(inner);
+                self.log("INFO", "Android WASM contract round-trip proof succeeded");
+            }
+            Err(message) => {
+                inner.contract_proof.state = ContractProofState::Failed;
+                inner.contract_proof.detail = message.clone();
+                drop(inner);
+                self.log("ERROR", format!("Contract proof failed: {message}"));
+            }
+        }
+    }
+
+    fn finish_persistence_proof(&self, outcome: Result<PersistenceResult, String>) {
+        let mut inner = lock_recover(&self.inner);
+        match outcome {
+            Ok(result) => {
+                inner.contract_proof.state = ContractProofState::Succeeded;
+                inner.contract_proof.detail =
+                    "The updated contract state persisted across the node restart".to_owned();
+                inner.contract_proof.contract_key = Some(result.contract_key);
+                inner.contract_proof.persistence_read_time_us =
+                    Some(result.persistence_read_time_us);
+                inner.contract_proof.peak_resident_set_kb = result.peak_resident_set_kb;
+                inner.contract_proof.result = Some(result.result);
+                inner.contract_proof.persistence_verified = true;
+                drop(inner);
+                self.log("INFO", "Post-restart contract persistence proof succeeded");
+            }
+            Err(message) => {
+                inner.contract_proof.state = ContractProofState::Failed;
+                inner.contract_proof.detail = message.clone();
+                drop(inner);
+                self.log(
+                    "ERROR",
+                    format!("Contract persistence proof failed: {message}"),
+                );
+            }
+        }
     }
 }
 
@@ -467,6 +643,11 @@ async fn run_local_runtime(
         command = command_rx.recv() => {
             match command {
                 Some(NodeCommand::Stop) | None => return ThreadExit::Stopped,
+                Some(NodeCommand::RunContractProof { .. } | NodeCommand::VerifyContractPersistence { .. }) => {
+                    return ThreadExit::Failed(
+                        "A contract command was received before local-node startup completed".to_owned()
+                    );
+                }
             }
         }
         result = &mut setup => {
@@ -494,6 +675,30 @@ async fn run_local_runtime(
             command = command_rx.recv() => {
                 match command {
                     Some(NodeCommand::Stop) | None => return ThreadExit::Stopped,
+                    Some(NodeCommand::RunContractProof { proof_run_id }) => {
+                        shared.mark_contract_proof_running(false);
+                        let proof_shared = Arc::clone(&shared);
+                        tokio::spawn(async move {
+                            let outcome = contract_proof::execute_round_trip(
+                                websocket_port,
+                                &proof_run_id,
+                            )
+                            .await;
+                            proof_shared.finish_contract_proof(outcome);
+                        });
+                    }
+                    Some(NodeCommand::VerifyContractPersistence { proof_run_id }) => {
+                        shared.mark_contract_proof_running(true);
+                        let proof_shared = Arc::clone(&shared);
+                        tokio::spawn(async move {
+                            let outcome = contract_proof::verify_persistence(
+                                websocket_port,
+                                &proof_run_id,
+                            )
+                            .await;
+                            proof_shared.finish_persistence_proof(outcome);
+                        });
+                    }
                 }
             }
             result = &mut node => {
@@ -686,5 +891,15 @@ mod tests {
 
         assert_eq!(response["ok"], true);
         assert_eq!(response["data"]["state"], "Stopped");
+    }
+
+    #[test]
+    fn contract_proof_requires_a_running_local_node() {
+        let runtime = NodeRuntime::new();
+        let response: serde_json::Value = serde_json::from_str(&runtime.run_contract_proof())
+            .expect("parse contract proof response");
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "NODE_NOT_RUNNING_LOCAL");
     }
 }

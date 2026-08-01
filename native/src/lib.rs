@@ -5,6 +5,7 @@ use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jint, jstring};
 
+mod contract_proof;
 mod runtime;
 
 use runtime::{jni_error_response, node_runtime};
@@ -79,6 +80,30 @@ pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeGetRecent
     max_entries: jint,
 ) -> jstring {
     jni_response(&mut env, |_| node_runtime().recent_logs(max_entries))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeRunContractProof(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    jni_response(&mut env, |_| node_runtime().run_contract_proof())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeVerifyContractPersistence(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    jni_response(&mut env, |_| node_runtime().verify_contract_persistence())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeGetContractProofStatus(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    jni_response(&mut env, |_| node_runtime().contract_proof_status())
 }
 
 fn freenet_build_info() -> String {

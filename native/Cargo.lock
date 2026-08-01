@@ -1668,10 +1668,12 @@ name = "freenet-android"
 version = "0.1.0"
 dependencies = [
  "freenet",
+ "freenet-stdlib",
  "jni 0.21.1",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.27.0",
 ]
 
 [[package]]

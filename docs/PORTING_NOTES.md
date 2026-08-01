@@ -124,6 +124,46 @@ duplicate Stop returned a successful structured `Stopped` envelope. No fatal
 exception, native crash, or ANR appeared in the app process log after the
 soak.
 
+## Phase 4 Wasmtime contract proof
+
+The Android adapter packages the existing upstream
+`tests/test-contract-mock-aligned` fixture, compiled for
+`wasm32-unknown-unknown` in the pinned Docker image. Its baseline SHA-256 is
+`fed7e208fb711822f060f030f856e97580cd9b1fc02f79e7a6dcac690bbc982c`.
+The fixture is already used by Freenet's conformance tests to compare the real
+Wasmtime backend with the mock executor; no Android-specific contract format
+or behavior was invented.
+
+The proof uses the same native WebSocket protocol as `fdev`:
+
+```text
+PUT initial state -> GET and compare -> UPDATE full state -> GET and compare
+-> stop node -> start node -> GET and compare persisted state -> stop node
+```
+
+Contract commands are queued through JNI and run asynchronously on the node's
+Tokio runtime, so neither Wasmtime initialization nor contract execution blocks
+the Compose thread. A dedicated Android instrumentation test polls the same
+structured JNI status used by the UI and guarantees Stop in a `finally` block.
+
+Physical ARM64/API 33 result:
+
+| Measurement | Result |
+| --- | ---: |
+| Contract container load/key creation | 1,877 us |
+| First execution (PUT validation) | 125,135 us |
+| Subsequent execution (UPDATE) | 26,763 us |
+| Post-restart persisted GET | 2,850 us |
+| Process peak resident set | 195,716 KiB |
+| Verified state | `phase4-updated-state` |
+
+No Wasmtime warning, executable-memory denial, dynamic-linker error, native
+crash, Java exception, or ANR was recorded. Android emitted an instrumentation
+warning because the test APK itself has no ABI while the target APK provides
+`arm64-v8a`; the target library loaded and executed successfully. The remaining
+Oplus runtime-flag/property and missing `.dm` profile messages are device or
+debug-install diagnostics, not Freenet/Wasmtime failures.
+
 ## Blocker template
 
 ```text
