@@ -30,9 +30,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.DrawerValue
@@ -60,9 +63,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.DialogProperties
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -84,11 +89,81 @@ class MainActivity : ComponentActivity() {
                 },
             ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    NodeScreen(nodeViewModel)
+                    var disclaimerAccepted by remember {
+                        mutableStateOf(AlphaDisclaimerAcceptance.isAccepted(this@MainActivity))
+                    }
+                    if (disclaimerAccepted) {
+                        NodeScreen(nodeViewModel)
+                    } else {
+                        AlphaDisclaimerDialog(
+                            onAccept = {
+                                AlphaDisclaimerAcceptance.accept(this@MainActivity)
+                                disclaimerAccepted = true
+                            },
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun AlphaDisclaimerDialog(onAccept: () -> Unit) {
+    var riskAccepted by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = {},
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+        ),
+        title = { Text("Warning: This application runs a full Freenet node.") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("Freenet is not yet optimized for mobile devices.")
+                Text("Running a node may result in:")
+                Text(
+                    "Significant battery drain\n" +
+                        "High CPU usage and device heating\n" +
+                        "Large Wi-Fi data usage\n" +
+                        "Reduced device performance",
+                )
+                Text("This software is intended for developers and early adopters only.")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = riskAccepted,
+                            role = Role.Checkbox,
+                            onValueChange = { riskAccepted = it },
+                        )
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = riskAccepted,
+                        onCheckedChange = null,
+                    )
+                    Text(
+                        "I have read and accept the risk advised in this disclaimer",
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onAccept,
+                enabled = riskAccepted,
+            ) {
+                Text("Accept and continue")
+            }
+        },
+    )
 }
 
 @Composable

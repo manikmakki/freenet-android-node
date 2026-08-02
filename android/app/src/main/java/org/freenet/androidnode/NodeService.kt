@@ -79,6 +79,12 @@ class NodeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         latestStartId = startId
         Log.i(TAG, "NodeService command action=${intent?.action} startId=$startId")
+        if (!AlphaDisclaimerAcceptance.isAccepted(this)) {
+            Log.w(TAG, "Rejecting NodeService start until the current alpha disclaimer is accepted")
+            shutdownCompleted = true
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_START_LOCAL -> {
                 NodePolicyRepository.stopAutomaticScheduling(this)

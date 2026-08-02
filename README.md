@@ -93,6 +93,13 @@ wait for `Stopped`. The Activity polls a structured native status envelope.
 Persistent node data uses `filesDir`, disposable caches use `cacheDir`, and
 identity material uses `noBackupFilesDir`.
 
+On first launch, the app presents a non-dismissible alpha-risk disclaimer. The
+checkbox must be selected before **Accept and continue** is enabled. Acceptance
+is stored for the installed Android `versionCode`; incrementing `versionCode`
+for a later release requires acceptance again. Clearing application data also
+clears acceptance. Boot restoration and direct foreground-service starts are
+blocked until the disclaimer for the current version has been accepted.
+
 The Android node uses Freenet's conventional client API port, `7509`. To open
 the running node's dashboard from the development host, forward that port over
 ADB and visit `http://127.0.0.1:7509/`:

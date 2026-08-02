@@ -12,6 +12,10 @@ class NodePolicyReceiver : BroadcastReceiver() {
         ) {
             return
         }
+        if (!AlphaDisclaimerAcceptance.isAccepted(context)) {
+            Log.i(TAG, "Skipping automatic node restoration until the alpha disclaimer is accepted")
+            return
+        }
         NodePolicyRepository.initialize(context)
         val policy = NodePolicyRepository.state.value
         if (!policy.automatic || policy.suspendedByUser) return
