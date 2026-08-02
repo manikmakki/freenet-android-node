@@ -5,7 +5,10 @@
     <string name="node_notification_channel_description">Persistent status and controls for the user-enabled Freenet node</string>
     <string name="node_notification_starting">Freenet node starting</string>
     <string name="node_notification_running">Freenet node running</string>
+    <string name="node_notification_waiting">Freenet node waiting</string>
+    <string name="node_notification_paused">Freenet node paused</string>
     <string name="node_notification_status">Mode: %1$s · Peers: %2$d · Uptime: %3$s</string>
     <string name="pause_node">Pause</string>
+    <string name="resume_node">Resume</string>
     <string name="stop_node">Stop</string>
 </resources>

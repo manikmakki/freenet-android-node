@@ -50,7 +50,6 @@ struct AndroidNodeConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct NetworkModeConfig {
-    wifi_only: bool,
     allow_metered: bool,
     connectivity: ConnectivityStatus,
 }
@@ -68,8 +67,8 @@ struct ConnectivityStatus {
 }
 
 impl ConnectivityStatus {
-    fn network_mode_allowed(&self) -> bool {
-        self.available && self.validated && self.wifi && !self.metered && !self.vpn
+    fn network_mode_allowed(&self, allow_metered: bool) -> bool {
+        self.available && self.validated && (allow_metered || !self.metered)
     }
 }
 
@@ -159,18 +158,20 @@ impl AndroidNodeConfig {
                 "Network mode requires an Android connectivity policy",
             )
         })?;
-        if !network.wifi_only || network.allow_metered {
-            return Err(NodeError::new(
-                "UNSUPPORTED_NETWORK_POLICY",
-                "Phase 7 requires Wi-Fi-only mode with metered networks disabled",
-            ));
-        }
-        if !network.connectivity.network_mode_allowed() {
+        if !network
+            .connectivity
+            .network_mode_allowed(network.allow_metered)
+        {
+            let cost_requirement = if network.allow_metered {
+                ""
+            } else {
+                " on an unmetered network"
+            };
             return Err(NodeError::new(
                 "NETWORK_POLICY_BLOCKED",
                 format!(
-                    "Network mode requires validated, unmetered Wi-Fi without VPN; current network is {}",
-                    network.connectivity.network_type
+                    "Network mode requires validated internet access{cost_requirement}; current network is {}",
+                    network.connectivity.network_type,
                 ),
             ));
         }
@@ -936,9 +937,9 @@ impl NodeRuntime {
         if inner.status.mode == Some(NodeMode::Network) {
             inner.status.last_network_error = if !connectivity.available {
                 Some("Android reports that connectivity is temporarily unavailable".to_owned())
-            } else if !connectivity.network_mode_allowed() {
+            } else if !connectivity.validated {
                 Some(format!(
-                    "The active {} network is blocked by the Wi-Fi-only policy",
+                    "The active {} network has not validated internet access",
                     connectivity.network_type
                 ))
             } else {
@@ -1779,12 +1780,17 @@ mod tests {
         .to_string()
     }
 
-    fn network_config_json(network_type: &str, wifi: bool, metered: bool, vpn: bool) -> String {
+    fn network_config_json(
+        network_type: &str,
+        wifi: bool,
+        metered: bool,
+        vpn: bool,
+        allow_metered: bool,
+    ) -> String {
         let mut config: serde_json::Value =
             serde_json::from_str(&valid_config_json()).expect("valid base JSON");
         config["network"] = serde_json::json!({
-            "wifiOnly": true,
-            "allowMetered": false,
+            "allowMetered": allow_metered,
             "connectivity": {
                 "available": true,
                 "validated": true,
@@ -1817,24 +1823,42 @@ mod tests {
     }
 
     #[test]
-    fn network_mode_is_fail_closed_to_validated_unmetered_wifi() {
-        let wifi = AndroidNodeConfig::parse(&network_config_json("Wi-Fi", true, false, false))
-            .expect("valid network config");
-        wifi.validate_network_mode().expect("Wi-Fi is allowed");
-
-        for (network_type, is_wifi, metered, vpn) in [
-            ("Cellular", false, true, false),
-            ("Wi-Fi", true, true, false),
-            ("VPN", false, false, true),
+    fn network_mode_uses_android_metered_status_as_its_cost_policy() {
+        for (network_type, is_wifi, vpn) in [
+            ("Wi-Fi", true, false),
+            ("Ethernet", false, false),
+            ("VPN", false, true),
         ] {
-            let blocked =
-                AndroidNodeConfig::parse(&network_config_json(network_type, is_wifi, metered, vpn))
-                    .expect("valid blocked config");
-            let error = blocked
+            let allowed = AndroidNodeConfig::parse(&network_config_json(
+                network_type,
+                is_wifi,
+                false,
+                vpn,
+                false,
+            ))
+            .expect("valid unmetered network config");
+            allowed
                 .validate_network_mode()
-                .expect_err("policy must reject this network");
-            assert_eq!(error.code, "NETWORK_POLICY_BLOCKED");
+                .expect("all validated unmetered transports are allowed");
         }
+
+        let metered =
+            AndroidNodeConfig::parse(&network_config_json("Cellular", false, true, false, false))
+                .expect("valid metered network config");
+        assert_eq!(
+            metered
+                .validate_network_mode()
+                .expect_err("unmetered policy must reject a metered network")
+                .code,
+            "NETWORK_POLICY_BLOCKED"
+        );
+
+        let any_validated =
+            AndroidNodeConfig::parse(&network_config_json("Cellular", false, true, false, true))
+                .expect("valid any-network config");
+        any_validated
+            .validate_network_mode()
+            .expect("the any-validated policy allows a metered network");
     }
 
     #[test]

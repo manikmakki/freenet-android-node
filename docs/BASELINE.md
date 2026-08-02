@@ -5,15 +5,17 @@ Baseline captured: 2026-08-01
 ## Freenet
 
 - Repository: `https://github.com/freenet/freenet-core.git`
-- Commit: `7f1f83875fd76a8ceb9d12270975e8735f4659cd`
-- Core crate version: `0.2.116`
+- Release tag: `v0.2.117`
+- Commit: `ba831f79ad55c1942618156fef58c6ec63dba72e`
+- Core crate version: `0.2.117`
 - Source modifications: none
 - Submodules: none registered at the captured commit
 
 The sibling checkout is mounted at `/workspace/freenet-core` during
 containerized checks. Freenet's `fdev` integration tests create ignored build
 artifacts there, so the baseline script enforces a clean tracked diff before
-and after every run. Phase 1 does not declare a Freenet dependency.
+and after every run. The Android native adapter consumes the core crate through
+this mounted path, while its lockfile records the selected crate version.
 
 ## Containerized build toolchain
 

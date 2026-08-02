@@ -55,9 +55,11 @@ object NodeRepository {
 
     val state: StateFlow<NodeUiState> = mutableState.asStateFlow()
     val storageState: StateFlow<StorageUiState> = mutableStorageState.asStateFlow()
+    val policies: StateFlow<NodePolicyState> = NodePolicyRepository.state
 
     fun startLocal(context: Context) {
         val appContext = context.applicationContext
+        NodePolicyRepository.stopAutomaticScheduling(appContext)
         mutableState.value = mutableState.value.copy(
             state = "Starting",
             detail = "Submitting the foreground-service start request",
@@ -73,9 +75,11 @@ object NodeRepository {
 
     fun startNetwork(context: Context) {
         val appContext = context.applicationContext
+        NodePolicyRepository.initialize(appContext)
+        NodePolicyRepository.setSuspended(appContext, false)
         mutableState.value = mutableState.value.copy(
             state = "Starting",
-            detail = "Checking the Wi-Fi-only policy before starting network mode",
+            detail = "Checking the selected power and network policies",
             serviceActive = true,
             mode = "Network",
             peers = 0,
@@ -87,6 +91,7 @@ object NodeRepository {
     }
 
     fun stop(context: Context) {
+        NodePolicyRepository.stopAutomaticScheduling(context.applicationContext)
         if (!mutableState.value.serviceActive) {
             val response = NativeBridge.nodeStatus().getOrElse {
                 "JNI status error: ${it.message ?: "unknown error"}"
@@ -101,7 +106,30 @@ object NodeRepository {
     }
 
     fun pause(context: Context) {
+        NodePolicyRepository.setSuspended(context.applicationContext, true)
         context.applicationContext.startService(NodeService.pauseIntent(context.applicationContext))
+    }
+
+    fun setPowerPolicy(context: Context, policy: NodePowerPolicy) {
+        val appContext = context.applicationContext
+        NodePolicyRepository.setPower(appContext, policy)
+        if (policy == NodePowerPolicy.Manual) {
+            if (mutableState.value.serviceActive) {
+                appContext.startService(NodeService.reconcilePolicyIntent(appContext))
+            }
+        } else {
+            appContext.startForegroundService(NodeService.reconcilePolicyIntent(appContext))
+        }
+    }
+
+    fun setNetworkDataPolicy(context: Context, policy: NetworkDataPolicy) {
+        val appContext = context.applicationContext
+        NodePolicyRepository.setNetworkData(appContext, policy)
+        if (mutableState.value.serviceActive) {
+            appContext.startService(NodeService.reconcilePolicyIntent(appContext))
+        } else if (NodePolicyRepository.state.value.automatic) {
+            appContext.startForegroundService(NodeService.reconcilePolicyIntent(appContext))
+        }
     }
 
     fun reportNotificationPermissionRequired() {
@@ -120,6 +148,18 @@ object NodeRepository {
             peers = 0,
             startedAtElapsedRealtimeMs = startedAtElapsedRealtimeMs,
             taskRemovedWhileRunning = false,
+        )
+    }
+
+    internal fun publishWaiting(detail: String, paused: Boolean = false) {
+        mutableState.value = mutableState.value.copy(
+            state = if (paused) "Paused" else "Waiting",
+            detail = detail,
+            serviceActive = true,
+            mode = "Network",
+            peers = 0,
+            startedAtElapsedRealtimeMs = null,
+            lastLifecycleResponse = detail,
         )
     }
 
@@ -338,6 +378,7 @@ private fun JSONObject.optionalString(name: String): String? =
 internal fun androidNodeConfigJson(
     context: Context,
     connectivity: ConnectivitySnapshot? = null,
+    networkDataPolicy: NetworkDataPolicy = NetworkDataPolicy.UnmeteredOnly,
 ): String {
     val persistentRoot = File(context.filesDir, "freenet")
     val config = JSONObject()
@@ -362,8 +403,7 @@ internal fun androidNodeConfigJson(
         config.put(
             "network",
             JSONObject()
-                .put("wifiOnly", true)
-                .put("allowMetered", false)
+                .put("allowMetered", networkDataPolicy == NetworkDataPolicy.AnyValidated)
                 .put("connectivity", JSONObject(connectivity.toJson())),
         )
     }

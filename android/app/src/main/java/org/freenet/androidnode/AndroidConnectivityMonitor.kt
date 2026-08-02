@@ -17,14 +17,18 @@ internal data class ConnectivitySnapshot(
     val activeNetwork: String?,
 ) {
     val networkModeAllowed: Boolean
-        get() = available && validated && wifi && !metered && !vpn
+        get() = isAllowed(NetworkDataPolicy.UnmeteredOnly)
 
-    fun policyBlockReason(): String = when {
+    fun isAllowed(policy: NetworkDataPolicy): Boolean =
+        available && validated && (policy == NetworkDataPolicy.AnyValidated || !metered)
+
+    fun policyBlockReason(
+        policy: NetworkDataPolicy = NetworkDataPolicy.UnmeteredOnly,
+    ): String = when {
         !available -> "No active network is available"
         !validated -> "The active network has not validated internet access"
-        vpn -> "VPN networks are blocked by the initial Wi-Fi-only policy"
-        !wifi -> "Network mode currently requires Wi-Fi"
-        metered -> "Metered networks are disabled"
+        metered && policy == NetworkDataPolicy.UnmeteredOnly ->
+            "The active network is metered; the node requires an unmetered network"
         else -> "Network mode is allowed"
     }
 

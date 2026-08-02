@@ -39,6 +39,12 @@ class NodeNotificationManager(private val context: Context) {
             NodeService.pauseIntent(context),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val resume = PendingIntent.getService(
+            context,
+            REQUEST_RESUME,
+            NodeService.startNetworkIntent(context),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val stop = PendingIntent.getService(
             context,
             REQUEST_STOP,
@@ -48,33 +54,28 @@ class NodeNotificationManager(private val context: Context) {
 
         val builder = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_node_notification)
-            .setContentTitle(
-                if (state.state == "Starting") {
-                    context.getString(R.string.node_notification_starting)
-                } else {
-                    context.getString(R.string.node_notification_running)
-                },
-            )
-            .setContentText(
-                context.getString(
-                    R.string.node_notification_status,
-                    state.mode,
-                    state.peers,
-                    formatUptime(state.uptimeMs),
-                ),
-            )
+            .setContentTitle(notificationTitle(state))
+            .setContentText(notificationText(state))
             .setCategory(Notification.CATEGORY_SERVICE)
             .setContentIntent(openApp)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
-            .addAction(
-                Notification.Action.Builder(
-                    Icon.createWithResource(context, R.drawable.ic_node_notification),
-                    context.getString(R.string.pause_node),
-                    pause,
-                ).build(),
-            )
+        val primaryAction = if (state.state == "Paused") {
+            Notification.Action.Builder(
+                Icon.createWithResource(context, R.drawable.ic_node_notification),
+                context.getString(R.string.resume_node),
+                resume,
+            ).build()
+        } else {
+            Notification.Action.Builder(
+                Icon.createWithResource(context, R.drawable.ic_node_notification),
+                context.getString(R.string.pause_node),
+                pause,
+            ).build()
+        }
+        builder
+            .addAction(primaryAction)
             .addAction(
                 Notification.Action.Builder(
                     Icon.createWithResource(context, R.drawable.ic_node_notification),
@@ -88,6 +89,25 @@ class NodeNotificationManager(private val context: Context) {
         }
         return builder.build()
     }
+
+    private fun notificationTitle(state: NodeUiState): String = when (state.state) {
+        "Starting" -> context.getString(R.string.node_notification_starting)
+        "Waiting" -> context.getString(R.string.node_notification_waiting)
+        "Paused" -> context.getString(R.string.node_notification_paused)
+        else -> context.getString(R.string.node_notification_running)
+    }
+
+    private fun notificationText(state: NodeUiState): String =
+        if (state.state == "Waiting" || state.state == "Paused") {
+            state.detail
+        } else {
+            context.getString(
+                R.string.node_notification_status,
+                state.mode,
+                state.peers,
+                formatUptime(state.uptimeMs),
+            )
+        }
 
     fun update(state: NodeUiState) {
         notificationManager.notify(NOTIFICATION_ID, build(state))
@@ -116,5 +136,6 @@ class NodeNotificationManager(private val context: Context) {
         private const val REQUEST_OPEN_APP = 1
         private const val REQUEST_PAUSE = 2
         private const val REQUEST_STOP = 3
+        private const val REQUEST_RESUME = 4
     }
 }
