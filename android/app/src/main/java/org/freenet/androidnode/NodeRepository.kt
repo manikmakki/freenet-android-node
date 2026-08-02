@@ -19,6 +19,15 @@ data class NodeUiState(
     val lastLifecycleResponse: String = "No lifecycle action submitted",
     val taskRemovedWhileRunning: Boolean = false,
     val identityFingerprint: String? = null,
+    val connectionAttempts: Long = 0,
+    val successfulConnections: Long = 0,
+    val bytesSent: Long = 0,
+    val bytesReceived: Long = 0,
+    val currentNetworkType: String = "Unavailable",
+    val connectivityAvailable: Boolean = false,
+    val networkMetered: Boolean = false,
+    val vpnActive: Boolean = false,
+    val lastNetworkError: String? = null,
 ) {
     val uptimeMs: Long
         get() = startedAtElapsedRealtimeMs
@@ -62,6 +71,21 @@ object NodeRepository {
         appContext.startForegroundService(NodeService.startLocalIntent(appContext))
     }
 
+    fun startNetwork(context: Context) {
+        val appContext = context.applicationContext
+        mutableState.value = mutableState.value.copy(
+            state = "Starting",
+            detail = "Checking the Wi-Fi-only policy before starting network mode",
+            serviceActive = true,
+            mode = "Network",
+            peers = 0,
+            startedAtElapsedRealtimeMs = SystemClock.elapsedRealtime(),
+            lastLifecycleResponse = "Starting network node through NodeService",
+            taskRemovedWhileRunning = false,
+        )
+        appContext.startForegroundService(NodeService.startNetworkIntent(appContext))
+    }
+
     fun stop(context: Context) {
         if (!mutableState.value.serviceActive) {
             val response = NativeBridge.nodeStatus().getOrElse {
@@ -87,12 +111,12 @@ object NodeRepository {
         )
     }
 
-    internal fun publishStarting(startedAtElapsedRealtimeMs: Long) {
+    internal fun publishStarting(startedAtElapsedRealtimeMs: Long, mode: String) {
         mutableState.value = mutableState.value.copy(
             state = "Starting",
             detail = "The foreground service is starting the native node",
             serviceActive = true,
-            mode = "Local",
+            mode = mode,
             peers = 0,
             startedAtElapsedRealtimeMs = startedAtElapsedRealtimeMs,
             taskRemovedWhileRunning = false,
@@ -110,10 +134,19 @@ object NodeRepository {
             detail = parsed.detail,
             completedStartCycles = parsed.completedStartCycles,
             serviceActive = serviceActive,
-            mode = if (parsed.state == "RunningNetwork") "Network" else "Local",
-            peers = 0,
+            mode = parsed.mode ?: mutableState.value.mode,
+            peers = parsed.peerCount,
             startedAtElapsedRealtimeMs = startedAtElapsedRealtimeMs,
             identityFingerprint = parsed.identityFingerprint,
+            connectionAttempts = parsed.connectionAttempts,
+            successfulConnections = parsed.successfulConnections,
+            bytesSent = parsed.bytesSent,
+            bytesReceived = parsed.bytesReceived,
+            currentNetworkType = parsed.currentNetworkType,
+            connectivityAvailable = parsed.connectivityAvailable,
+            networkMetered = parsed.networkMetered,
+            vpnActive = parsed.vpnActive,
+            lastNetworkError = parsed.lastNetworkError,
         )
         mutableState.value = next
         return next
@@ -142,6 +175,22 @@ object NodeRepository {
             serviceActive = false,
             startedAtElapsedRealtimeMs = null,
             lastLifecycleResponse = response,
+        )
+    }
+
+    internal fun publishPolicyStopped(
+        status: NodeStatusSnapshot,
+        response: String,
+        reason: String,
+    ) {
+        mutableState.value = mutableState.value.copy(
+            state = "Stopped",
+            detail = "Network mode stopped safely: $reason",
+            completedStartCycles = status.completedStartCycles,
+            serviceActive = false,
+            startedAtElapsedRealtimeMs = null,
+            lastLifecycleResponse = response,
+            lastNetworkError = reason,
         )
     }
 
@@ -190,6 +239,16 @@ object NodeRepository {
         }
         mutableStorageState.value = parseStorageStatus(response)
     }
+
+    internal fun publishConnectivity(snapshot: ConnectivitySnapshot, response: String) {
+        mutableState.value = mutableState.value.copy(
+            currentNetworkType = snapshot.networkType,
+            connectivityAvailable = snapshot.available,
+            networkMetered = snapshot.metered,
+            vpnActive = snapshot.vpn,
+            lastLifecycleResponse = response,
+        )
+    }
 }
 
 internal data class NodeStatusSnapshot(
@@ -197,6 +256,17 @@ internal data class NodeStatusSnapshot(
     val detail: String,
     val completedStartCycles: Long,
     val identityFingerprint: String?,
+    val mode: String? = null,
+    val peerCount: Int = 0,
+    val connectionAttempts: Long = 0,
+    val successfulConnections: Long = 0,
+    val bytesSent: Long = 0,
+    val bytesReceived: Long = 0,
+    val currentNetworkType: String = "Unavailable",
+    val connectivityAvailable: Boolean = false,
+    val networkMetered: Boolean = false,
+    val vpnActive: Boolean = false,
+    val lastNetworkError: String? = null,
 )
 
 internal fun parseNodeStatus(response: String): NodeStatusSnapshot {
@@ -217,6 +287,17 @@ internal fun parseNodeStatus(response: String): NodeStatusSnapshot {
             detail = data.optString("detail", "No detail"),
             completedStartCycles = data.optLong("completedStartCycles"),
             identityFingerprint = data.optionalString("identityFingerprint"),
+            mode = data.optionalString("mode"),
+            peerCount = data.optInt("peerCount"),
+            connectionAttempts = data.optLong("connectionAttempts"),
+            successfulConnections = data.optLong("successfulConnections"),
+            bytesSent = data.optLong("bytesSent"),
+            bytesReceived = data.optLong("bytesReceived"),
+            currentNetworkType = data.optString("currentNetworkType", "Unavailable"),
+            connectivityAvailable = data.optBoolean("connectivityAvailable"),
+            networkMetered = data.optBoolean("networkMetered"),
+            vpnActive = data.optBoolean("vpnActive"),
+            lastNetworkError = data.optionalString("lastNetworkError"),
         )
     }.getOrElse { error ->
         NodeStatusSnapshot("Failed", error.message ?: response, 0, null)
@@ -254,9 +335,12 @@ private fun parseStorageStatus(response: String): StorageUiState {
 private fun JSONObject.optionalString(name: String): String? =
     if (isNull(name)) null else optString(name)
 
-internal fun androidNodeConfigJson(context: Context): String {
+internal fun androidNodeConfigJson(
+    context: Context,
+    connectivity: ConnectivitySnapshot? = null,
+): String {
     val persistentRoot = File(context.filesDir, "freenet")
-    return JSONObject()
+    val config = JSONObject()
         .put("filesDir", context.filesDir.absolutePath)
         .put("cacheDir", context.cacheDir.absolutePath)
         .put("noBackupFilesDir", context.noBackupFilesDir.absolutePath)
@@ -274,5 +358,14 @@ internal fun androidNodeConfigJson(context: Context): String {
         )
         .put("temporaryDirectory", File(context.cacheDir, "freenet/temporary").absolutePath)
         .put("websocketPort", 7509)
-        .toString()
+    if (connectivity != null) {
+        config.put(
+            "network",
+            JSONObject()
+                .put("wifiOnly", true)
+                .put("allowMetered", false)
+                .put("connectivity", JSONObject(connectivity.toJson())),
+        )
+    }
+    return config.toString()
 }

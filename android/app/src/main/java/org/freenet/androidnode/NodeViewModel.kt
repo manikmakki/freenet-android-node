@@ -11,6 +11,10 @@ class NodeViewModel(application: Application) : AndroidViewModel(application) {
         NodeRepository.startLocal(getApplication())
     }
 
+    fun startNetworkNode() {
+        NodeRepository.startNetwork(getApplication())
+    }
+
     fun stopNode() {
         NodeRepository.stop(getApplication())
     }

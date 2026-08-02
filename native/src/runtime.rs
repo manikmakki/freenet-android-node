@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use freenet::config::{ConfigArgs, ConfigPathsArgs};
-use freenet::local_node::{Executor, OperationMode};
+use freenet::local_node::{Executor, NodeConfig, OperationMode};
+use freenet::transport::metrics::TRANSPORT_METRICS;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -42,6 +43,34 @@ struct AndroidNodeConfig {
     identity_directory: PathBuf,
     temporary_directory: PathBuf,
     websocket_port: u16,
+    #[serde(default)]
+    network: Option<NetworkModeConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NetworkModeConfig {
+    wifi_only: bool,
+    allow_metered: bool,
+    connectivity: ConnectivityStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConnectivityStatus {
+    available: bool,
+    validated: bool,
+    wifi: bool,
+    metered: bool,
+    vpn: bool,
+    network_type: String,
+    active_network: Option<String>,
+}
+
+impl ConnectivityStatus {
+    fn network_mode_allowed(&self) -> bool {
+        self.available && self.validated && self.wifi && !self.metered && !self.vpn
+    }
 }
 
 impl AndroidNodeConfig {
@@ -121,6 +150,31 @@ impl AndroidNodeConfig {
             ));
         }
         Ok(())
+    }
+
+    fn validate_network_mode(&self) -> Result<&NetworkModeConfig, NodeError> {
+        let network = self.network.as_ref().ok_or_else(|| {
+            NodeError::new(
+                "NETWORK_CONFIG_REQUIRED",
+                "Network mode requires an Android connectivity policy",
+            )
+        })?;
+        if !network.wifi_only || network.allow_metered {
+            return Err(NodeError::new(
+                "UNSUPPORTED_NETWORK_POLICY",
+                "Phase 7 requires Wi-Fi-only mode with metered networks disabled",
+            ));
+        }
+        if !network.connectivity.network_mode_allowed() {
+            return Err(NodeError::new(
+                "NETWORK_POLICY_BLOCKED",
+                format!(
+                    "Network mode requires validated, unmetered Wi-Fi without VPN; current network is {}",
+                    network.connectivity.network_type
+                ),
+            ));
+        }
+        Ok(network)
     }
 
     fn data_root(&self) -> PathBuf {
@@ -278,6 +332,27 @@ impl AndroidNodeConfig {
             return Ok(());
         }
 
+        write_private_config_atomically(&config_path, migrated.as_bytes())
+    }
+
+    fn enable_documented_network_bootstrap(&self) -> Result<(), NodeError> {
+        let config_path = self.configuration_directory.join("config.toml");
+        if !config_path.exists() {
+            return Ok(());
+        }
+        let original = std::fs::read_to_string(&config_path).map_err(|error| {
+            NodeError::new(
+                "CONFIG_MIGRATION_FAILED",
+                format!("Failed to read the persisted configuration: {error}"),
+            )
+        })?;
+        let migrated = original.replace(
+            "skip_load_from_network = true",
+            "skip_load_from_network = false",
+        );
+        if migrated == original {
+            return Ok(());
+        }
         write_private_config_atomically(&config_path, migrated.as_bytes())
     }
 
@@ -548,6 +623,12 @@ enum NodeState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+enum NodeMode {
+    Local,
+    Network,
+}
+
 impl NodeState {
     fn can_start(self) -> bool {
         matches!(self, Self::Stopped | Self::Failed)
@@ -558,22 +639,46 @@ impl NodeState {
 #[serde(rename_all = "camelCase")]
 struct NodeStatus {
     state: NodeState,
+    mode: Option<NodeMode>,
     detail: String,
     websocket_port: Option<u16>,
     identity_fingerprint: Option<String>,
     transition_time_ms: u64,
     completed_start_cycles: u64,
+    peer_count: u32,
+    connection_attempts: u64,
+    successful_connections: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
+    uptime_ms: u64,
+    current_network_type: String,
+    connectivity_available: bool,
+    network_metered: bool,
+    vpn_active: bool,
+    last_network_error: Option<String>,
 }
 
 impl NodeStatus {
     fn stopped() -> Self {
         Self {
             state: NodeState::Stopped,
-            detail: "The local node is stopped".to_owned(),
+            mode: None,
+            detail: "The node is stopped".to_owned(),
             websocket_port: None,
             identity_fingerprint: None,
             transition_time_ms: unix_time_ms(),
             completed_start_cycles: 0,
+            peer_count: 0,
+            connection_attempts: 0,
+            successful_connections: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            uptime_ms: 0,
+            current_network_type: "Unavailable".to_owned(),
+            connectivity_available: false,
+            network_metered: false,
+            vpn_active: false,
+            last_network_error: None,
         }
     }
 }
@@ -637,6 +742,10 @@ struct RuntimeInner {
     status: NodeStatus,
     contract_proof: ContractProofStatus,
     command_tx: Option<mpsc::UnboundedSender<NodeCommand>>,
+    started_at_ms: Option<u64>,
+    last_observed_peer_count: u32,
+    transport_sent_baseline: u64,
+    transport_received_baseline: u64,
 }
 
 struct SharedRuntime {
@@ -656,6 +765,10 @@ impl NodeRuntime {
                     status: NodeStatus::stopped(),
                     contract_proof: ContractProofStatus::idle(),
                     command_tx: None,
+                    started_at_ms: None,
+                    last_observed_peer_count: 0,
+                    transport_sent_baseline: 0,
+                    transport_received_baseline: 0,
                 }),
                 logs: Mutex::new(VecDeque::with_capacity(LOG_CAPACITY)),
             }),
@@ -663,10 +776,23 @@ impl NodeRuntime {
     }
 
     pub(crate) fn start_local(&self, config_json: &str) -> String {
+        self.start(config_json, NodeMode::Local)
+    }
+
+    pub(crate) fn start_network(&self, config_json: &str) -> String {
+        self.start(config_json, NodeMode::Network)
+    }
+
+    fn start(&self, config_json: &str, mode: NodeMode) -> String {
         let config = match AndroidNodeConfig::parse(config_json) {
             Ok(config) => config,
             Err(error) => return error_response(error),
         };
+        if mode == NodeMode::Network
+            && let Err(error) = config.validate_network_mode()
+        {
+            return error_response(error);
+        }
         let identity_fingerprint = match config.prepare_storage() {
             Ok(fingerprint) => fingerprint,
             Err(error) => return error_response(error),
@@ -683,7 +809,7 @@ impl NodeRuntime {
             return error_response(NodeError::new(
                 code,
                 format!(
-                    "Cannot start a local node while it is {:?}",
+                    "Cannot start a {mode:?} node while it is {:?}",
                     inner.status.state
                 ),
             ));
@@ -692,18 +818,47 @@ impl NodeRuntime {
         let completed_start_cycles = inner.status.completed_start_cycles;
         inner.status = NodeStatus {
             state: NodeState::Starting,
+            mode: Some(mode),
             detail: "The dedicated native node thread is starting".to_owned(),
             websocket_port: Some(config.websocket_port),
             identity_fingerprint: Some(identity_fingerprint),
             transition_time_ms: unix_time_ms(),
             completed_start_cycles,
+            peer_count: 0,
+            connection_attempts: u64::from(mode == NodeMode::Network),
+            successful_connections: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            uptime_ms: 0,
+            current_network_type: config
+                .network
+                .as_ref()
+                .map(|network| network.connectivity.network_type.clone())
+                .unwrap_or_else(|| "Local-only".to_owned()),
+            connectivity_available: config
+                .network
+                .as_ref()
+                .is_some_and(|network| network.connectivity.available),
+            network_metered: config
+                .network
+                .as_ref()
+                .is_some_and(|network| network.connectivity.metered),
+            vpn_active: config
+                .network
+                .as_ref()
+                .is_some_and(|network| network.connectivity.vpn),
+            last_network_error: None,
         };
+        inner.started_at_ms = Some(unix_time_ms());
+        inner.last_observed_peer_count = 0;
+        inner.transport_sent_baseline = TRANSPORT_METRICS.cumulative_bytes_sent();
+        inner.transport_received_baseline = TRANSPORT_METRICS.cumulative_bytes_received();
         inner.command_tx = Some(command_tx);
 
         let shared = Arc::clone(&self.shared);
         let thread_result = thread::Builder::new()
             .name("freenet-android-node".to_owned())
-            .spawn(move || node_thread(shared, config, command_rx));
+            .spawn(move || node_thread(shared, config, mode, command_rx));
         if let Err(error) = thread_result {
             inner.command_tx = None;
             inner.status.state = NodeState::Failed;
@@ -719,7 +874,7 @@ impl NodeRuntime {
         self.shared.log(
             "INFO",
             format!(
-                "Accepted local-node start request on 127.0.0.1:{}",
+                "Accepted {mode:?}-node start request with management API on 127.0.0.1:{}",
                 config_json_port(config_json).unwrap_or_default()
             ),
         );
@@ -736,7 +891,7 @@ impl NodeRuntime {
         }
 
         inner.status.state = NodeState::Stopping;
-        inner.status.detail = "A cooperative local-node shutdown was requested".to_owned();
+        inner.status.detail = "A cooperative node shutdown was requested".to_owned();
         inner.status.transition_time_ms = unix_time_ms();
         let status = inner.status.clone();
         let sent = inner
@@ -758,7 +913,53 @@ impl NodeRuntime {
     }
 
     pub(crate) fn status(&self) -> String {
-        success_response(lock_recover(&self.shared.inner).status.clone())
+        let mut inner = lock_recover(&self.shared.inner);
+        refresh_runtime_metrics(&mut inner);
+        success_response(inner.status.clone())
+    }
+
+    pub(crate) fn update_connectivity(&self, connectivity_json: &str) -> String {
+        let connectivity: ConnectivityStatus = match serde_json::from_str(connectivity_json) {
+            Ok(connectivity) => connectivity,
+            Err(error) => {
+                return error_response(NodeError::new(
+                    "INVALID_CONNECTIVITY",
+                    format!("The Android connectivity update is invalid: {error}"),
+                ));
+            }
+        };
+        let mut inner = lock_recover(&self.shared.inner);
+        inner.status.current_network_type = connectivity.network_type.clone();
+        inner.status.connectivity_available = connectivity.available;
+        inner.status.network_metered = connectivity.metered;
+        inner.status.vpn_active = connectivity.vpn;
+        if inner.status.mode == Some(NodeMode::Network) {
+            inner.status.last_network_error = if !connectivity.available {
+                Some("Android reports that connectivity is temporarily unavailable".to_owned())
+            } else if !connectivity.network_mode_allowed() {
+                Some(format!(
+                    "The active {} network is blocked by the Wi-Fi-only policy",
+                    connectivity.network_type
+                ))
+            } else {
+                None
+            };
+        }
+        refresh_runtime_metrics(&mut inner);
+        let status = inner.status.clone();
+        drop(inner);
+        self.shared.log(
+            "INFO",
+            format!(
+                "Android connectivity changed: type={}, available={}, validated={}, metered={}, vpn={}",
+                connectivity.network_type,
+                connectivity.available,
+                connectivity.validated,
+                connectivity.metered,
+                connectivity.vpn,
+            ),
+        );
+        success_response(status)
     }
 
     pub(crate) fn run_contract_proof(&self) -> String {
@@ -1001,20 +1202,27 @@ impl SharedRuntime {
         });
     }
 
-    fn mark_running(&self, websocket_port: u16) {
+    fn mark_running(&self, websocket_port: u16, mode: NodeMode) {
         let mut inner = lock_recover(&self.inner);
         if inner.status.state != NodeState::Starting {
             return;
         }
-        inner.status.state = NodeState::RunningLocal;
-        inner.status.detail = "The Freenet local node is accepting connections".to_owned();
+        inner.status.state = match mode {
+            NodeMode::Local => NodeState::RunningLocal,
+            NodeMode::Network => NodeState::RunningNetwork,
+        };
+        inner.status.detail = match mode {
+            NodeMode::Local => "The Freenet local node is accepting connections",
+            NodeMode::Network => "The Freenet network node is running and connecting to peers",
+        }
+        .to_owned();
         inner.status.websocket_port = Some(websocket_port);
         inner.status.transition_time_ms = unix_time_ms();
         inner.status.completed_start_cycles += 1;
         drop(inner);
         self.log(
             "INFO",
-            format!("Local node is running on 127.0.0.1:{websocket_port}"),
+            format!("{mode:?} node is running with management API on 127.0.0.1:{websocket_port}"),
         );
     }
 
@@ -1022,16 +1230,19 @@ impl SharedRuntime {
         let mut inner = lock_recover(&self.inner);
         inner.command_tx = None;
         inner.status.state = NodeState::Stopped;
-        inner.status.detail = "The local node stopped and released its runtime".to_owned();
+        inner.status.detail = "The node stopped and released its runtime".to_owned();
         inner.status.websocket_port = None;
         inner.status.transition_time_ms = unix_time_ms();
+        inner.status.peer_count = 0;
+        inner.started_at_ms = None;
+        inner.last_observed_peer_count = 0;
         if inner.contract_proof.state.is_active() {
             inner.contract_proof.state = ContractProofState::Failed;
             inner.contract_proof.detail =
                 "The local node stopped before the contract proof completed".to_owned();
         }
         drop(inner);
-        self.log("INFO", "Local node shutdown completed");
+        self.log("INFO", "Node shutdown completed");
     }
 
     fn finish_failed(&self, message: String) {
@@ -1117,6 +1328,34 @@ impl SharedRuntime {
     }
 }
 
+fn refresh_runtime_metrics(inner: &mut RuntimeInner) {
+    inner.status.uptime_ms = inner
+        .started_at_ms
+        .map(|started| unix_time_ms().saturating_sub(started))
+        .unwrap_or(0);
+    if inner.status.mode != Some(NodeMode::Network) {
+        return;
+    }
+
+    let peers = freenet::transport::get_open_connection_count() as u32;
+    if peers > inner.last_observed_peer_count {
+        inner.status.successful_connections = inner
+            .status
+            .successful_connections
+            .saturating_add(u64::from(peers - inner.last_observed_peer_count));
+    } else if peers == 0 && inner.last_observed_peer_count > 0 {
+        inner.status.connection_attempts = inner.status.connection_attempts.saturating_add(1);
+    }
+    inner.last_observed_peer_count = peers;
+    inner.status.peer_count = peers;
+    inner.status.bytes_sent = TRANSPORT_METRICS
+        .cumulative_bytes_sent()
+        .saturating_sub(inner.transport_sent_baseline);
+    inner.status.bytes_received = TRANSPORT_METRICS
+        .cumulative_bytes_received()
+        .saturating_sub(inner.transport_received_baseline);
+}
+
 enum ThreadExit {
     Stopped,
     Failed(String),
@@ -1125,6 +1364,7 @@ enum ThreadExit {
 fn node_thread(
     shared: Arc<SharedRuntime>,
     config: AndroidNodeConfig,
+    mode: NodeMode,
     command_rx: mpsc::UnboundedReceiver<NodeCommand>,
 ) {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -1136,7 +1376,14 @@ fn node_thread(
             .build()
             .map_err(|error| format!("Failed to construct the Tokio runtime: {error}"))?;
 
-        let exit = runtime.block_on(run_local_runtime(Arc::clone(&shared), config, command_rx));
+        let exit = runtime.block_on(async {
+            match mode {
+                NodeMode::Local => run_local_runtime(Arc::clone(&shared), config, command_rx).await,
+                NodeMode::Network => {
+                    run_network_runtime(Arc::clone(&shared), config, command_rx).await
+                }
+            }
+        });
         runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
         Ok::<ThreadExit, String>(exit)
     }));
@@ -1231,7 +1478,82 @@ async fn run_local_runtime(
                     .is_ok()
                 {
                     reported_running = true;
-                    shared.mark_running(websocket_port);
+                    shared.mark_running(websocket_port, NodeMode::Local);
+                }
+            }
+        }
+    }
+}
+
+async fn run_network_runtime(
+    shared: Arc<SharedRuntime>,
+    config: AndroidNodeConfig,
+    mut command_rx: mpsc::UnboundedReceiver<NodeCommand>,
+) -> ThreadExit {
+    let setup = prepare_network_node(&config);
+    tokio::pin!(setup);
+    let (node, shutdown_handle, websocket_port) = tokio::select! {
+        biased;
+        command = command_rx.recv() => {
+            match command {
+                Some(NodeCommand::Stop) | None => return ThreadExit::Stopped,
+                Some(NodeCommand::RunContractProof { .. } | NodeCommand::VerifyContractPersistence { .. }) => {
+                    return ThreadExit::Failed(
+                        "A local-only contract proof command was received during network-node startup".to_owned()
+                    );
+                }
+            }
+        }
+        result = &mut setup => {
+            match result {
+                Ok(node) => node,
+                Err(error) => return ThreadExit::Failed(error.message),
+            }
+        }
+    };
+
+    shared.log(
+        "INFO",
+        "Freenet network configuration loaded from the documented gateway index",
+    );
+    let node = freenet::run_network_node(node);
+    tokio::pin!(node);
+    let mut startup_probe = tokio::time::interval(STARTUP_PROBE_INTERVAL);
+    startup_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut reported_running = false;
+
+    loop {
+        tokio::select! {
+            biased;
+            command = command_rx.recv() => {
+                match command {
+                    Some(NodeCommand::Stop) | None => {
+                        shutdown_handle.shutdown().await;
+                        return match tokio::time::timeout(RUNTIME_SHUTDOWN_TIMEOUT, &mut node).await {
+                            Ok(_) => ThreadExit::Stopped,
+                            Err(_) => ThreadExit::Failed(
+                                "The Freenet network node did not finish its graceful shutdown in time".to_owned()
+                            ),
+                        };
+                    }
+                    Some(NodeCommand::RunContractProof { .. } | NodeCommand::VerifyContractPersistence { .. }) => {
+                        shared.log("WARN", "Ignored a local-only contract proof command in network mode");
+                    }
+                }
+            }
+            result = &mut node => {
+                return ThreadExit::Failed(match result {
+                    Ok(()) => "The Freenet network-node future exited unexpectedly".to_owned(),
+                    Err(error) => format!("The Freenet network node failed: {error:#}"),
+                });
+            }
+            _ = startup_probe.tick(), if !reported_running => {
+                if tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, websocket_port))
+                    .await
+                    .is_ok()
+                {
+                    reported_running = true;
+                    shared.mark_running(websocket_port, NodeMode::Network);
                 }
             }
         }
@@ -1285,6 +1607,85 @@ async fn prepare_local_node(
             )
         })?;
     Ok((executor, socket))
+}
+
+async fn prepare_network_node(
+    android_config: &AndroidNodeConfig,
+) -> Result<(freenet::Node, freenet::ShutdownHandle, u16), NodeError> {
+    android_config.validate_network_mode()?;
+    android_config.prepare_storage()?;
+    android_config.enable_documented_network_bootstrap()?;
+
+    let mut args = ConfigArgs {
+        mode: Some(OperationMode::Network),
+        config_paths: ConfigPathsArgs {
+            config_dir: Some(android_config.configuration_directory.clone()),
+            data_dir: Some(android_config.data_root()),
+            log_dir: Some(android_config.log_directory.clone()),
+        },
+        disable_auto_update: true,
+        ..ConfigArgs::default()
+    };
+    args.ws_api.address = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    args.ws_api.ws_api_port = Some(android_config.websocket_port);
+    args.network_api.address = Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    args.network_api.skip_load_from_network = false;
+    args.secrets.transport_keypair = Some(android_config.transport_keypair_path());
+    args.secrets.cipher = Some(android_config.delegate_cipher_path());
+
+    let mut config = args.build().await.map_err(|error| {
+        NodeError::new(
+            "NETWORK_CONFIG_BUILD_FAILED",
+            format!("Failed to build the Freenet network configuration: {error:#}"),
+        )
+    })?;
+    let paths = config.paths();
+    require_canonical_path(
+        "Freenet network database directory",
+        &paths.db_dir(OperationMode::Network),
+        android_config
+            .database_directory
+            .parent()
+            .expect("validated database directory has a parent"),
+    )?;
+    require_canonical_path(
+        "Freenet network contract directory",
+        &paths.contracts_dir(OperationMode::Network),
+        android_config
+            .contract_directory
+            .parent()
+            .expect("validated contract directory has a parent"),
+    )?;
+    if config.ws_api.address != IpAddr::V4(Ipv4Addr::LOCALHOST) {
+        return Err(NodeError::new(
+            "MANAGEMENT_BIND_REJECTED",
+            "The Freenet management API must remain bound to IPv4 loopback",
+        ));
+    }
+    config.ws_api.webapp_cache_dir = android_config.webapp_cache_dir();
+    let websocket_port = config.ws_api.port;
+    let clients = freenet::server::serve_client_api(config.ws_api.clone())
+        .await
+        .map_err(|error| {
+            NodeError::new(
+                "CLIENT_API_START_FAILED",
+                format!("Failed to start the loopback Freenet client API: {error}"),
+            )
+        })?;
+    let node_config = NodeConfig::new(config).await.map_err(|error| {
+        NodeError::new(
+            "NETWORK_NODE_CONFIG_FAILED",
+            format!("Failed to load the documented Freenet gateways: {error:#}"),
+        )
+    })?;
+    let node = node_config.build(clients).await.map_err(|error| {
+        NodeError::new(
+            "NETWORK_NODE_BUILD_FAILED",
+            format!("Failed to build the Freenet network node: {error:#}"),
+        )
+    })?;
+    let shutdown_handle = node.shutdown_handle();
+    Ok((node, shutdown_handle, websocket_port))
 }
 
 fn require_canonical_path(name: &str, actual: &Path, expected: &Path) -> Result<(), NodeError> {
@@ -1378,6 +1779,25 @@ mod tests {
         .to_string()
     }
 
+    fn network_config_json(network_type: &str, wifi: bool, metered: bool, vpn: bool) -> String {
+        let mut config: serde_json::Value =
+            serde_json::from_str(&valid_config_json()).expect("valid base JSON");
+        config["network"] = serde_json::json!({
+            "wifiOnly": true,
+            "allowMetered": false,
+            "connectivity": {
+                "available": true,
+                "validated": true,
+                "wifi": wifi,
+                "metered": metered,
+                "vpn": vpn,
+                "networkType": network_type,
+                "activeNetwork": "test-network-1",
+            }
+        });
+        config.to_string()
+    }
+
     #[test]
     fn android_paths_are_explicit_and_consistent() {
         let config = AndroidNodeConfig::parse(&valid_config_json()).expect("valid config");
@@ -1394,6 +1814,41 @@ mod tests {
         let error = AndroidNodeConfig::parse(&json).expect_err("invalid path must fail");
 
         assert_eq!(error.code, "INVALID_PATH_LAYOUT");
+    }
+
+    #[test]
+    fn network_mode_is_fail_closed_to_validated_unmetered_wifi() {
+        let wifi = AndroidNodeConfig::parse(&network_config_json("Wi-Fi", true, false, false))
+            .expect("valid network config");
+        wifi.validate_network_mode().expect("Wi-Fi is allowed");
+
+        for (network_type, is_wifi, metered, vpn) in [
+            ("Cellular", false, true, false),
+            ("Wi-Fi", true, true, false),
+            ("VPN", false, false, true),
+        ] {
+            let blocked =
+                AndroidNodeConfig::parse(&network_config_json(network_type, is_wifi, metered, vpn))
+                    .expect("valid blocked config");
+            let error = blocked
+                .validate_network_mode()
+                .expect_err("policy must reject this network");
+            assert_eq!(error.code, "NETWORK_POLICY_BLOCKED");
+        }
+    }
+
+    #[test]
+    fn connectivity_updates_are_structured_and_visible() {
+        let runtime = NodeRuntime::new();
+        let response: serde_json::Value = serde_json::from_str(&runtime.update_connectivity(
+            r#"{"available":true,"validated":true,"wifi":true,"metered":false,"vpn":false,"networkType":"Wi-Fi","activeNetwork":"test-network-1"}"#,
+        ))
+        .expect("parse connectivity response");
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["data"]["currentNetworkType"], "Wi-Fi");
+        assert_eq!(response["data"]["connectivityAvailable"], true);
+        assert_eq!(response["data"]["networkMetered"], false);
     }
 
     #[test]
@@ -1477,7 +1932,7 @@ mod tests {
             .expect("create legacy config directory");
         let legacy_root = no_backup.join("freenet");
         let legacy_config = format!(
-            "transport_keypair = \"{}\"\ncipher = \"{}\"\ncontracts_dir = \"{}\"\ndb_dir = \"{}\"\ndata_dir = \"{}\"\nwasmtime_cache_dir = \"{}\"\n",
+            "transport_keypair = \"{}\"\ncipher = \"{}\"\ncontracts_dir = \"{}\"\ndb_dir = \"{}\"\ndata_dir = \"{}\"\nwasmtime_cache_dir = \"{}\"\nskip_load_from_network = true\n",
             legacy_root
                 .join("secrets/local/transport_keypair")
                 .display(),
@@ -1495,6 +1950,9 @@ mod tests {
 
         let first = config.prepare_storage().expect("create private identity");
         let second = config.prepare_storage().expect("reuse private identity");
+        config
+            .enable_documented_network_bootstrap()
+            .expect("enable documented gateway loading");
         assert_eq!(first, second);
         assert!(config.transport_keypair_path().starts_with(&no_backup));
         assert!(config.delegate_cipher_path().starts_with(&no_backup));
@@ -1528,6 +1986,7 @@ mod tests {
             )
         );
         assert!(!migrated_config.contains(&format!("\"{}\"", legacy_root.display())));
+        assert!(migrated_config.contains("skip_load_from_network = false"));
 
         let runtime = NodeRuntime::new();
         let status: serde_json::Value = serde_json::from_str(&runtime.storage_status(&config_json))

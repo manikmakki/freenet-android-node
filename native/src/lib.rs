@@ -58,6 +58,36 @@ pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeStartLoca
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeStartNetworkNode(
+    mut env: JNIEnv,
+    _class: JClass,
+    config_json: JString,
+) -> jstring {
+    jni_response(&mut env, |env| match env.get_string(&config_json) {
+        Ok(config) => node_runtime().start_network(&config.to_string_lossy()),
+        Err(error) => jni_error_response(
+            "INVALID_CONFIG",
+            format!("Failed to read configJson from JNI: {error}"),
+        ),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeUpdateConnectivity(
+    mut env: JNIEnv,
+    _class: JClass,
+    connectivity_json: JString,
+) -> jstring {
+    jni_response(&mut env, |env| match env.get_string(&connectivity_json) {
+        Ok(connectivity) => node_runtime().update_connectivity(&connectivity.to_string_lossy()),
+        Err(error) => jni_error_response(
+            "INVALID_CONNECTIVITY",
+            format!("Failed to read connectivityJson from JNI: {error}"),
+        ),
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_freenet_androidnode_NativeBridge_nativeStopNode(
     mut env: JNIEnv,
     _class: JClass,

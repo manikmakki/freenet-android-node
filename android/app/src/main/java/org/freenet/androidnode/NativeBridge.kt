@@ -19,6 +19,10 @@ object NativeBridge {
 
     external fun nativeStartLocalNode(configJson: String): String
 
+    external fun nativeStartNetworkNode(configJson: String): String
+
+    external fun nativeUpdateConnectivity(connectivityJson: String): String
+
     external fun nativeStopNode(): String
 
     external fun nativeGetNodeStatus(): String
@@ -41,6 +45,12 @@ object NativeBridge {
 
     fun startLocalNode(configJson: String): Result<String> =
         withLoadedLibrary { nativeStartLocalNode(configJson) }
+
+    fun startNetworkNode(configJson: String): Result<String> =
+        withLoadedLibrary { nativeStartNetworkNode(configJson) }
+
+    fun updateConnectivity(connectivityJson: String): Result<String> =
+        withLoadedLibrary { nativeUpdateConnectivity(connectivityJson) }
 
     fun stopNode(): Result<String> = withLoadedLibrary(::nativeStopNode)
 

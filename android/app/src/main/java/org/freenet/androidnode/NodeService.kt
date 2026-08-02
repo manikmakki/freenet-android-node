@@ -24,25 +24,42 @@ class NodeService : Service() {
     private val lifecycleMutex = Mutex()
 
     private lateinit var nodeNotificationManager: NodeNotificationManager
+    private lateinit var connectivityMonitor: AndroidConnectivityMonitor
     private var statusJob: Job? = null
     private var foregroundStarted = false
     private var shutdownCompleted = false
     private var startedAtElapsedRealtimeMs: Long? = null
+    private var runningMode = "Local"
+    private var latestStartId = 0
 
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "NodeService created")
         nodeNotificationManager = NodeNotificationManager(this)
         nodeNotificationManager.ensureChannel()
+        connectivityMonitor = AndroidConnectivityMonitor(this) { snapshot ->
+            serviceScope.launch { handleConnectivityChanged(snapshot) }
+        }
+        connectivityMonitor.register()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = startId
         Log.i(TAG, "NodeService command action=${intent?.action} startId=$startId")
         when (intent?.action) {
             ACTION_START_LOCAL -> {
-                startForegroundImmediately()
+                runningMode = "Local"
+                startForegroundImmediately(runningMode)
                 serviceScope.launch {
-                    lifecycleMutex.withLock { startLocalNode(startId) }
+                    lifecycleMutex.withLock { startNode(startId, networkMode = false) }
+                }
+            }
+
+            ACTION_START_NETWORK -> {
+                runningMode = "Network"
+                startForegroundImmediately(runningMode)
+                serviceScope.launch {
+                    lifecycleMutex.withLock { startNode(startId, networkMode = true) }
                 }
             }
 
@@ -66,6 +83,7 @@ class NodeService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "NodeService destroyed shutdownCompleted=$shutdownCompleted")
+        connectivityMonitor.unregister()
         statusJob?.cancel()
         if (!shutdownCompleted) {
             val response = NativeBridge.stopNode().getOrElse {
@@ -88,11 +106,11 @@ class NodeService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startForegroundImmediately() {
+    private fun startForegroundImmediately(mode: String) {
         if (startedAtElapsedRealtimeMs == null) {
             startedAtElapsedRealtimeMs = SystemClock.elapsedRealtime()
         }
-        NodeRepository.publishStarting(startedAtElapsedRealtimeMs!!)
+        NodeRepository.publishStarting(startedAtElapsedRealtimeMs!!, mode)
         startForeground(
             NodeNotificationManager.NOTIFICATION_ID,
             nodeNotificationManager.build(NodeRepository.state.value),
@@ -100,10 +118,27 @@ class NodeService : Service() {
         foregroundStarted = true
     }
 
-    private suspend fun startLocalNode(startId: Int) {
+    private suspend fun startNode(startId: Int, networkMode: Boolean) {
         shutdownCompleted = false
+        val connectivity = connectivityMonitor.currentSnapshot()
+        if (networkMode && !connectivity.networkModeAllowed) {
+            val detail = connectivity.policyBlockReason()
+            NodeRepository.publishFailure(detail, "NETWORK_POLICY_BLOCKED: $detail")
+            shutdownCompleted = true
+            finishService(startId)
+            return
+        }
         val response = withContext(Dispatchers.IO) {
-            NativeBridge.startLocalNode(androidNodeConfigJson(this@NodeService)).getOrElse {
+            val configJson = androidNodeConfigJson(
+                this@NodeService,
+                connectivity.takeIf { networkMode },
+            )
+            val result = if (networkMode) {
+                NativeBridge.startNetworkNode(configJson)
+            } else {
+                NativeBridge.startLocalNode(configJson)
+            }
+            result.getOrElse {
                 "JNI error: ${it.message ?: "unknown error"}"
             }
         }
@@ -120,6 +155,31 @@ class NodeService : Service() {
             }
         }
         beginStatusUpdates()
+    }
+
+    private suspend fun handleConnectivityChanged(snapshot: ConnectivitySnapshot) {
+        val response = withContext(Dispatchers.IO) {
+            NativeBridge.updateConnectivity(snapshot.toJson()).getOrElse {
+                "JNI connectivity error: ${it.message ?: "unknown error"}"
+            }
+        }
+        NodeRepository.publishConnectivity(snapshot, response)
+
+        val policyProhibitsActiveNetwork = snapshot.available &&
+            (snapshot.vpn || !snapshot.wifi || snapshot.metered)
+        if (
+            runningMode == "Network" &&
+            policyProhibitsActiveNetwork &&
+            NodeRepository.state.value.state in ACTIVE_NATIVE_STATES
+        ) {
+            lifecycleMutex.withLock {
+                shutDownNode(
+                    latestStartId,
+                    paused = false,
+                    policyReason = snapshot.policyBlockReason(),
+                )
+            }
+        }
     }
 
     private fun beginStatusUpdates() {
@@ -145,7 +205,11 @@ class NodeService : Service() {
         }
     }
 
-    private suspend fun shutDownNode(startId: Int, paused: Boolean) {
+    private suspend fun shutDownNode(
+        startId: Int,
+        paused: Boolean,
+        policyReason: String? = null,
+    ) {
         statusJob?.cancelAndJoin()
         statusJob = null
         val response = withContext(Dispatchers.IO) {
@@ -170,6 +234,8 @@ class NodeService : Service() {
             if (finalStatus.state == "Stopped" || finalStatus.state == "Failed") {
                 if (paused && finalStatus.state == "Stopped") {
                     NodeRepository.publishPaused(finalStatus, response)
+                } else if (policyReason != null && finalStatus.state == "Stopped") {
+                    NodeRepository.publishPolicyStopped(finalStatus, response, policyReason)
                 } else {
                     NodeRepository.publishStopped(finalStatus, response)
                 }
@@ -205,6 +271,7 @@ class NodeService : Service() {
 
     companion object {
         const val ACTION_START_LOCAL = "org.freenet.androidnode.action.START_LOCAL"
+        const val ACTION_START_NETWORK = "org.freenet.androidnode.action.START_NETWORK"
         const val ACTION_PAUSE = "org.freenet.androidnode.action.PAUSE"
         const val ACTION_STOP = "org.freenet.androidnode.action.STOP"
 
@@ -220,6 +287,9 @@ class NodeService : Service() {
 
         fun startLocalIntent(context: Context): Intent =
             Intent(context, NodeService::class.java).setAction(ACTION_START_LOCAL)
+
+        fun startNetworkIntent(context: Context): Intent =
+            Intent(context, NodeService::class.java).setAction(ACTION_START_NETWORK)
 
         fun pauseIntent(context: Context): Intent =
             Intent(context, NodeService::class.java).setAction(ACTION_PAUSE)

@@ -53,11 +53,16 @@ private fun NativeBridgeScreen(nodeViewModel: NodeViewModel) {
     val context = LocalContext.current
     val serviceState by nodeViewModel.state.collectAsState()
     val storageState by nodeViewModel.storageState.collectAsState()
+    var pendingNetworkStart by remember { mutableStateOf(false) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) {
-            nodeViewModel.startLocalNode()
+            if (pendingNetworkStart) {
+                nodeViewModel.startNetworkNode()
+            } else {
+                nodeViewModel.startLocalNode()
+            }
         } else {
             nodeViewModel.reportNotificationPermissionRequired()
         }
@@ -123,9 +128,24 @@ private fun NativeBridgeScreen(nodeViewModel: NodeViewModel) {
         Text(text = "Native version: $buildInfo")
         Text(text = freenetBuildInfo)
         Text(text = "Node state: ${serviceState.state}")
+        Text(text = "Node mode: ${serviceState.mode}")
         Text(text = "Node detail: ${serviceState.detail}")
         Text(text = "Service active: ${serviceState.serviceActive}")
         Text(text = "Completed start cycles: ${serviceState.completedStartCycles}")
+        Text(
+            text = "Network: ${serviceState.currentNetworkType}; " +
+                "available=${serviceState.connectivityAvailable}; " +
+                "metered=${serviceState.networkMetered}; VPN=${serviceState.vpnActive}",
+        )
+        Text(
+            text = "Peers: ${serviceState.peers}; attempts: ${serviceState.connectionAttempts}; " +
+                "successful connections: ${serviceState.successfulConnections}",
+        )
+        Text(
+            text = "Network bytes: sent ${serviceState.bytesSent.displayBytes()}, " +
+                "received ${serviceState.bytesReceived.displayBytes()}",
+        )
+        Text(text = "Last network error: ${serviceState.lastNetworkError ?: "None"}")
         Text(text = "Identity fingerprint: ${storageState.identityFingerprint ?: "Not created"}")
         Text(text = "Storage status: ${storageState.detail}")
         Text(text = "Identity files owner-only: ${storageState.identityOwnerOnly}")
@@ -149,6 +169,7 @@ private fun NativeBridgeScreen(nodeViewModel: NodeViewModel) {
         Button(
             enabled = NativeBridge.isLoaded,
             onClick = {
+                pendingNetworkStart = false
                 if (
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
@@ -161,6 +182,23 @@ private fun NativeBridgeScreen(nodeViewModel: NodeViewModel) {
             },
         ) {
             Text("Start local node")
+        }
+        Button(
+            enabled = NativeBridge.isLoaded && !serviceState.serviceActive,
+            onClick = {
+                pendingNetworkStart = true
+                if (
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    nodeViewModel.startNetworkNode()
+                }
+            },
+        ) {
+            Text("Start network node (unmetered Wi-Fi)")
         }
         Button(
             enabled = NativeBridge.isLoaded && serviceState.serviceActive,
