@@ -106,9 +106,11 @@ jobs:
 
       - name: Fix cache permissions
         run: |
-          # Cache restore produces files owned by root; container runs as UID 1000.
-          chown -R 1000:1000 /tmp/.cargo-registry /tmp/.build-target 2>/dev/null || true
-          chmod -R u+rwX /tmp/.cargo-registry /tmp/.build-target 2>/dev/null || true
+          # Cache restore produces files owned by root; container runs as UID 1000 (developer user).
+          # Create dirs first (in case cache miss), then chown+chmod.
+          sudo mkdir -p /tmp/.cargo-registry /tmp/.build-target
+          sudo chown -R 1000:1000 /tmp/.cargo-registry /tmp/.build-target
+          sudo chmod -R u+rwX /tmp/.cargo-registry /tmp/.build-target
 
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
@@ -124,14 +126,6 @@ jobs:
 
       - name: Run lint and tests
         run: |
-          mkdir -p /tmp/.build-target
-          if [ -d /tmp/.build-target ]; then
-            cp -a /tmp/.build-target/. /workspace/target/cargo/ 2>/dev/null || true
-          fi
-          if [ -d /tmp/.cargo-registry ]; then
-            cp -a /tmp/.cargo-registry/. /opt/cargo/registry/ 2>/dev/null || true
-          fi
-
           docker run --rm \
             -v ${{ github.workspace }}/freenet-android-node:/workspace/freenet-android-node \
             -v ${{ github.workspace }}/freenet-core:/workspace/freenet-core \
@@ -147,10 +141,10 @@ jobs:
 
       - name: Save build target cache
         run: |
-          mkdir -p /tmp/.build-target
-          if [ -d /workspace/target/cargo ]; then
-            cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
-          fi
+          # Container runs as UID 1000, so files written to bind mounts are already owned by 1000.
+          # Just ensure dirs exist before copying back.
+          sudo mkdir -p /tmp/.build-target
+          sudo cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
 
   build:
     name: Build APK
@@ -187,9 +181,11 @@ jobs:
 
       - name: Fix cache permissions
         run: |
-          # Cache restore produces files owned by root; container runs as UID 1000.
-          chown -R 1000:1000 /tmp/.gradle-cache /tmp/.build-target 2>/dev/null || true
-          chmod -R u+rwX /tmp/.gradle-cache /tmp/.build-target 2>/dev/null || true
+          # Cache restore produces files owned by root; container runs as UID 1000 (developer user).
+          # Create dirs first (in case cache miss), then chown+chmod.
+          sudo mkdir -p /tmp/.gradle-cache /tmp/.build-target
+          sudo chown -R 1000:1000 /tmp/.gradle-cache /tmp/.build-target
+          sudo chmod -R u+rwX /tmp/.gradle-cache /tmp/.build-target
 
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
@@ -205,14 +201,6 @@ jobs:
 
       - name: Build debug APK
         run: |
-          mkdir -p /tmp/.build-target
-          if [ -d /tmp/.gradle-cache ]; then
-            cp -a /tmp/.gradle-cache/. /workspace/cache/gradle/ 2>/dev/null || true
-          fi
-          if [ -d /tmp/.build-target ]; then
-            cp -a /tmp/.build-target/. /workspace/target/cargo/ 2>/dev/null || true
-          fi
-
           docker run --rm \
             -v ${{ github.workspace }}/freenet-android-node:/workspace/freenet-android-node \
             -v ${{ github.workspace }}/freenet-core:/workspace/freenet-core \
@@ -239,11 +227,7 @@ jobs:
 
       - name: Save build target cache
         run: |
-          mkdir -p /tmp/.build-target
-          if [ -d /workspace/target/cargo ]; then
-            cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
-          fi
-          if [ -d /workspace/cache/gradle ]; then
-            mkdir -p /tmp/.gradle-cache
-            cp -a /workspace/cache/gradle/. /tmp/.gradle-cache/ 2>/dev/null || true
-          fi
+          # Container runs as UID 1000, so files written to bind mounts are already owned by 1000.
+          sudo mkdir -p /tmp/.build-target /tmp/.gradle-cache
+          sudo cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
+          sudo cp -a /workspace/cache/gradle/. /tmp/.gradle-cache/ 2>/dev/null || true
