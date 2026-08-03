@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FREENET_CORE_VERSION: "v0.2.118"
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout freenet-android-node
+        uses: actions/checkout@v4
+        with:
+          path: freenet-android-node
+
+      - name: Checkout freenet-core (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: freenet/freenet-core
+          ref: ${{ env.FREENET_CORE_VERSION }}
+          path: freenet-core
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build dev image
+        working-directory: freenet-android-node
+        run: docker compose build dev
+
+      - name: Run full check suite
+        working-directory: freenet-android-node
+        run: docker compose run --rm dev scripts/check.sh
+
+      - name: Upload build artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: freenet-android-debug
+          path: |
+            freenet-android-node/android/app/build/outputs/apk/debug/app-debug.apk
+            freenet-android-node/android/app/src/main/jniLibs/
+          retention-days: 14
