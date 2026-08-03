@@ -12,14 +12,26 @@ concurrency:
 
 env:
   FREENET_CORE_VERSION: "v0.2.118"
+  DOCKER_IMAGE: freenet-android-node-dev
 
 jobs:
-  build:
-    name: Build & Check
+  build-and-test:
+    name: Build & Test
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 40
     steps:
+      - name: Checkout freenet-android-node
+        uses: actions/checkout@v4
+        with:
+          path: freenet-android-node
+
+      - name: Checkout freenet-core
+        uses: actions/checkout@v4
+        with:
+          repository: freenet/freenet-core
+          ref: ${{ env.FREENET_CORE_VERSION }}
+          path: freenet-core
+
       - name: Free disk space on runner
         run: |
           docker system prune -af --volumes
@@ -27,40 +39,82 @@ jobs:
           echo "Disk space after cleanup:"
           df -h /
 
-      - name: Checkout freenet-android-node
-        uses: actions/checkout@v4
-        with:
-          path: freenet-android-node
-
-      - name: Checkout freenet-core (sibling)
-        uses: actions/checkout@v4
-        with:
-          repository: freenet/freenet-core
-          ref: ${{ env.FREENET_CORE_VERSION }}
-          path: freenet-core
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Fix volume mount permissions (host-side)
-        working-directory: freenet-android-node
-        run: |
-          echo "Current directory ownership:"
-          ls -la .
-          echo "Setting owner to uid:gid 1000:1000 (matches container developer user)..."
-          sudo chown -R 1000:1000 .
-          echo "After chown:"
-          ls -la .
-      - name: Build dev image
-        working-directory: freenet-android-node
-        run: docker compose build dev
+      - name: Build and cache Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: freenet-android-node
+          push: false
+          load: true
+          tags: ${{ env.DOCKER_IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Run full check suite (as root to fix volume permissions)
-        working-directory: freenet-android-node
-        run: docker compose run --rm --user 0 dev bash -c "chmod -R u+rwX /workspace/freenet-android-node && scripts/check.sh"
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.cargo-registry
+          key: ${{ runner.os }}-cargo-${{ hashFiles('freenet-android-node/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.gradle-cache
+          key: ${{ runner.os }}-gradle-${{ hashFiles('freenet-android-node/android/build.gradle*', 'freenet-android-node/android/settings.gradle*', 'freenet-android-node/android/gradle/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache build target (cargo + gradle)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.build-target
+          key: ${{ runner.os }}-target-${{ hashFiles('freenet-android-node/**/Cargo.lock', 'freenet-android-node/android/build.gradle*', 'freenet-android-node/android/settings.gradle*') }}
+          restore-keys: |
+            ${{ runner.os }}-target-
+
+      - name: Fix volume mount permissions
+        run: |
+          sudo chown -R 1000:1000 freenet-android-node
+          sudo chmod -R u+rwX freenet-android-node
+
+      - name: Run check suite
+        run: |
+          # Restore cached build targets
+          if [ -d /tmp/.build-target ]; then
+            mkdir -p /workspace/target/cargo
+            cp -a /tmp/.build-target/* /workspace/target/cargo/ 2>/dev/null || true
+          fi
+          if [ -d /tmp/.cargo-registry ]; then
+            mkdir -p /opt/cargo/registry
+            cp -a /tmp/.cargo-registry/* /opt/cargo/registry/ 2>/dev/null || true
+          fi
+          if [ -d /tmp/.gradle-cache ]; then
+            mkdir -p /workspace/cache/gradle
+            cp -a /tmp/.gradle-cache/* /workspace/cache/gradle/ 2>/dev/null || true
+          fi
+
+          docker run --rm \
+            -v ${{ github.workspace }}/freenet-android-node:/workspace/freenet-android-node \
+            -v ${{ github.workspace }}/freenet-core:/workspace/freenet-core \
+            -v /tmp/.cargo-registry:/opt/cargo/registry \
+            -v /tmp/.gradle-cache:/workspace/cache/gradle \
+            -v /tmp/.build-target:/workspace/target/cargo \
+            -e CARGO_TARGET_DIR=/workspace/target/cargo \
+            -e GRADLE_USER_HOME=/workspace/cache/gradle \
+            -e ANDROID_USER_HOME=/workspace/cache/gradle/android-user \
+            ${{ env.DOCKER_IMAGE }} \
+            bash -c "
+              cd /workspace/freenet-android-node
+              chmod -R u+rwX .
+              ./scripts/check.sh
+            "
 
       - name: Upload APK artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: freenet-android-debug
@@ -68,3 +122,18 @@ jobs:
             freenet-android-node/android/app/build/outputs/apk/debug/app-debug.apk
             freenet-android-node/android/app/src/main/jniLibs/
           retention-days: 14
+
+      - name: Save build target cache
+        run: |
+          mkdir -p /tmp/.build-target
+          if [ -d /workspace/target/cargo ]; then
+            cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
+          fi
+          if [ -d /opt/cargo/registry ]; then
+            mkdir -p /tmp/.cargo-registry
+            cp -a /opt/cargo/registry/. /tmp/.cargo-registry/ 2>/dev/null || true
+          fi
+          if [ -d /workspace/cache/gradle ]; then
+            mkdir -p /tmp/.gradle-cache
+            cp -a /workspace/cache/gradle/. /tmp/.gradle-cache/ 2>/dev/null || true
+          fi
