@@ -15,11 +15,12 @@ env:
   DOCKER_IMAGE: freenet-android-node-dev
 
 jobs:
-  build-and-test:
-    name: Build & Test
+  setup:
+    name: Setup & Build Docker
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 30
+    outputs:
+      lock: ${{ steps.hash.outputs.lock }}
     steps:
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
@@ -53,47 +54,168 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Save Docker image as artifact
+        run: |
+          docker save ${{ env.DOCKER_IMAGE }} | gzip > freenet-docker-image.tar.gz
+          echo "Image size:"
+          du -sh freenet-docker-image.tar.gz
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: freenet-docker-image
+          path: freenet-docker-image.tar.gz
+          retention-days: 1
+
+      - name: Compute lock hash
+        id: hash
+        run: echo "lock=${{ hashFiles('**/Cargo.lock', '**/*.gradle*', 'Dockerfile') }}" >> $GITHUB_OUTPUT
+
+  lint:
+    name: Lint & Test Rust
+    runs-on: ubuntu-latest
+    needs: setup
+    timeout-minutes: 30
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: freenet-docker-image
+
+      - name: Load Docker image
+        run: |
+          docker load < freenet-docker-image.tar.gz
+          echo "Loaded image:"
+          docker images ${{ env.DOCKER_IMAGE }}
+
       - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
           path: /tmp/.cargo-registry
-          key: ${{ runner.os }}-cargo-${{ hashFiles('freenet-android-node/**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ needs.setup.outputs.lock }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Cache build target
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.build-target
+          key: ${{ runner.os }}-target-${{ needs.setup.outputs.lock }}
+          restore-keys: |
+            ${{ runner.os }}-target-
+
+      - name: Fix cache permissions
+        run: |
+          # Cache restore produces files owned by root; container runs as UID 1000.
+          chown -R 1000:1000 /tmp/.cargo-registry /tmp/.build-target 2>/dev/null || true
+          chmod -R u+rwX /tmp/.cargo-registry /tmp/.build-target 2>/dev/null || true
+
+      - name: Checkout freenet-android-node
+        uses: actions/checkout@v4
+        with:
+          path: freenet-android-node
+
+      - name: Checkout freenet-core
+        uses: actions/checkout@v4
+        with:
+          repository: freenet/freenet-core
+          ref: ${{ env.FREENET_CORE_VERSION }}
+          path: freenet-core
+
+      - name: Run lint and tests
+        run: |
+          mkdir -p /tmp/.build-target
+          if [ -d /tmp/.build-target ]; then
+            cp -a /tmp/.build-target/. /workspace/target/cargo/ 2>/dev/null || true
+          fi
+          if [ -d /tmp/.cargo-registry ]; then
+            cp -a /tmp/.cargo-registry/. /opt/cargo/registry/ 2>/dev/null || true
+          fi
+
+          docker run --rm \
+            -v ${{ github.workspace }}/freenet-android-node:/workspace/freenet-android-node \
+            -v ${{ github.workspace }}/freenet-core:/workspace/freenet-core \
+            -v /tmp/.cargo-registry:/opt/cargo/registry \
+            -v /tmp/.build-target:/workspace/target/cargo \
+            -e CARGO_TARGET_DIR=/workspace/target/cargo \
+            ${{ env.DOCKER_IMAGE }} \
+            bash -c "
+              cd /workspace/freenet-android-node
+              chmod -R u+rwX .
+              ./scripts/check.sh
+            "
+
+      - name: Save build target cache
+        run: |
+          mkdir -p /tmp/.build-target
+          if [ -d /workspace/target/cargo ]; then
+            cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
+          fi
+
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    needs: setup
+    timeout-minutes: 30
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: freenet-docker-image
+
+      - name: Load Docker image
+        run: |
+          docker load < freenet-docker-image.tar.gz
+          echo "Loaded image:"
+          docker images ${{ env.DOCKER_IMAGE }}
 
       - name: Cache Gradle dependencies
         uses: actions/cache@v4
         with:
           path: /tmp/.gradle-cache
-          key: ${{ runner.os }}-gradle-${{ hashFiles('freenet-android-node/android/build.gradle*', 'freenet-android-node/android/settings.gradle*', 'freenet-android-node/android/gradle/libs.versions.toml') }}
+          key: ${{ runner.os }}-gradle-${{ needs.setup.outputs.lock }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Cache build target (cargo + gradle)
+      - name: Cache build target
         uses: actions/cache@v4
         with:
           path: /tmp/.build-target
-          key: ${{ runner.os }}-target-${{ hashFiles('freenet-android-node/**/Cargo.lock', 'freenet-android-node/android/build.gradle*', 'freenet-android-node/android/settings.gradle*') }}
+          key: ${{ runner.os }}-target-${{ needs.setup.outputs.lock }}
           restore-keys: |
             ${{ runner.os }}-target-
 
-      - name: Fix volume mount permissions
+      - name: Fix cache permissions
         run: |
-          sudo chown -R 1000:1000 freenet-android-node
-          sudo chmod -R u+rwX freenet-android-node
+          # Cache restore produces files owned by root; container runs as UID 1000.
+          chown -R 1000:1000 /tmp/.gradle-cache /tmp/.build-target 2>/dev/null || true
+          chmod -R u+rwX /tmp/.gradle-cache /tmp/.build-target 2>/dev/null || true
 
-      - name: Fix cache directory permissions
-        run: |
-          # Cache restore may produce files with restrictive permissions;
-          # make them writable for the container.
-          chmod -R u+rwX /tmp/.cargo-registry /tmp/.gradle-cache /tmp/.build-target 2>/dev/null || true
+      - name: Checkout freenet-android-node
+        uses: actions/checkout@v4
+        with:
+          path: freenet-android-node
 
-      - name: Run check suite
+      - name: Checkout freenet-core
+        uses: actions/checkout@v4
+        with:
+          repository: freenet/freenet-core
+          ref: ${{ env.FREENET_CORE_VERSION }}
+          path: freenet-core
+
+      - name: Build debug APK
         run: |
+          mkdir -p /tmp/.build-target
+          if [ -d /tmp/.gradle-cache ]; then
+            cp -a /tmp/.gradle-cache/. /workspace/cache/gradle/ 2>/dev/null || true
+          fi
+          if [ -d /tmp/.build-target ]; then
+            cp -a /tmp/.build-target/. /workspace/target/cargo/ 2>/dev/null || true
+          fi
+
           docker run --rm \
             -v ${{ github.workspace }}/freenet-android-node:/workspace/freenet-android-node \
             -v ${{ github.workspace }}/freenet-core:/workspace/freenet-core \
-            -v /tmp/.cargo-registry:/opt/cargo/registry \
             -v /tmp/.gradle-cache:/workspace/cache/gradle \
             -v /tmp/.build-target:/workspace/target/cargo \
             -e CARGO_TARGET_DIR=/workspace/target/cargo \
@@ -103,11 +225,10 @@ jobs:
             bash -c "
               cd /workspace/freenet-android-node
               chmod -R u+rwX .
-              ./scripts/check.sh
+              ./scripts/build-debug.sh
             "
 
       - name: Upload APK artifact
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: freenet-android-debug
@@ -121,10 +242,6 @@ jobs:
           mkdir -p /tmp/.build-target
           if [ -d /workspace/target/cargo ]; then
             cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
-          fi
-          if [ -d /opt/cargo/registry ]; then
-            mkdir -p /tmp/.cargo-registry
-            cp -a /opt/cargo/registry/. /tmp/.cargo-registry/ 2>/dev/null || true
           fi
           if [ -d /workspace/cache/gradle ]; then
             mkdir -p /tmp/.gradle-cache
