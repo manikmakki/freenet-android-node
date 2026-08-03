@@ -46,6 +46,9 @@ jobs:
         working-directory: freenet-android-node
         run: docker compose build dev
 
+      - name: Fix volume mount permissions
+        working-directory: freenet-android-node
+        run: sudo chmod -R u+rwX .
       - name: Run full check suite
         working-directory: freenet-android-node
         run: docker compose run --rm dev scripts/check.sh
