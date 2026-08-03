@@ -5,9 +5,9 @@ Baseline captured: 2026-08-01
 ## Freenet
 
 - Repository: `https://github.com/freenet/freenet-core.git`
-- Release tag: `v0.2.117`
-- Commit: `ba831f79ad55c1942618156fef58c6ec63dba72e`
-- Core crate version: `0.2.117`
+- Release tag: `v0.2.118`
+- Commit: `6f9ece86a8c9ceaee43e95255ba4e90e937f06a7`
+- Core crate version: `0.2.118`
 - Source modifications: none
 - Submodules: none registered at the captured commit
 

@@ -2,7 +2,7 @@
 
 An engineering prototype for embedding Freenet in an Android application. The
 current Phase 8 implementation provides a minimal Android shell around Freenet
-core 0.2.117: the existing core dashboard in a locked-down WebView, a hamburger
+core 0.2.118: the existing core dashboard in a locked-down WebView, a hamburger
 drawer for node controls and policy settings, and copyable JSON diagnostics.
 The client/dashboard API remains loopback-only on port 7509, while network mode
 discovers peers from Freenet core's documented gateway index.
@@ -279,7 +279,7 @@ docker compose run --rm dev scripts/prepare-contract-fixture.sh
 The adapter disables Freenet's implicit defaults and selects the required set
 explicitly: `redb`, `trace`, `wasmtime-backend`, and `websocket`. This preserves
 the current upstream default functionality while making Android builds
-auditable. Freenet 0.2.117 does not compile with tracing omitted because several
+auditable. Freenet does not compile with tracing omitted because several
 unconditionally compiled modules use tracing-gated APIs, so `trace` is required
 in addition to the Phase 2 A-E matrix.
 
