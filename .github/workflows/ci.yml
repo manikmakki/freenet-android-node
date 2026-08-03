@@ -15,7 +15,7 @@ env:
 
 jobs:
   build:
-    name: Build (arm64 + x86_64)
+    name: Build & Check
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -46,25 +46,16 @@ jobs:
         working-directory: freenet-android-node
         run: docker compose build dev
 
-      - name: Build native libraries (arm64)
+      - name: Run full check suite
         working-directory: freenet-android-node
-        run: |
-          docker compose run --rm dev bash -c 'cd /workspace/freenet-android-node && ./scripts/build.sh arm64-v8a'
-        timeout-minutes: 30
-
-      - name: Build native libraries (x86_64)
-        working-directory: freenet-android-node
-        run: |
-          docker compose run --rm dev bash -c 'cd /workspace/freenet-android-node && ./scripts/build.sh x86_64'
-        timeout-minutes: 30
+        run: docker compose run --rm dev scripts/check.sh
 
       - name: Upload APK artifact
-        if: always()
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: freenet-android-build
+          name: freenet-android-debug
           path: |
-            freenet-android-node/android/app/build/outputs/
+            freenet-android-node/android/app/build/outputs/apk/debug/app-debug.apk
             freenet-android-node/android/app/src/main/jniLibs/
           retention-days: 14
-          if-no-files-found: warn
