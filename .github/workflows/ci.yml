@@ -46,12 +46,9 @@ jobs:
         working-directory: freenet-android-node
         run: docker compose build dev
 
-      - name: Fix volume mount permissions
+      - name: Run full check suite (as root to fix volume permissions)
         working-directory: freenet-android-node
-        run: sudo chmod -R u+rwX .
-      - name: Run full check suite
-        working-directory: freenet-android-node
-        run: docker compose run --rm dev scripts/check.sh
+        run: docker compose run --rm --user 0 dev bash -c "chmod -R u+rwX /workspace/freenet-android-node && scripts/check.sh"
 
       - name: Upload APK artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
