@@ -66,17 +66,9 @@ RUN curl --proto '=https' --tlsv1.2 -fsS https://sh.rustup.rs \
         x86_64-linux-android \
     && cargo install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked
 
-RUN groupadd --gid "${DEV_GID}" developer \
-    && useradd --uid "${DEV_UID}" --gid "${DEV_GID}" --create-home developer \
-    && mkdir -p /workspace/cache/gradle /workspace/target \
-    && chown -R developer:developer \
-        /opt/cargo \
-        /opt/rustup \
-        /workspace/cache \
-        /workspace/target
+RUN mkdir -p /workspace/cache/gradle /workspace/target /workspace/freenet-android-node \
+    && chmod -R a+rwX /workspace
 
 WORKDIR /workspace/freenet-android-node
-
-USER developer
 
 CMD ["bash"]
