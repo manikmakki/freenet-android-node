@@ -82,22 +82,14 @@ jobs:
           sudo chown -R 1000:1000 freenet-android-node
           sudo chmod -R u+rwX freenet-android-node
 
+      - name: Fix cache directory permissions
+        run: |
+          # Cache restore may produce files with restrictive permissions;
+          # make them writable for the container.
+          chmod -R u+rwX /tmp/.cargo-registry /tmp/.gradle-cache /tmp/.build-target 2>/dev/null || true
+
       - name: Run check suite
         run: |
-          # Restore cached build targets
-          if [ -d /tmp/.build-target ]; then
-            mkdir -p /workspace/target/cargo
-            cp -a /tmp/.build-target/* /workspace/target/cargo/ 2>/dev/null || true
-          fi
-          if [ -d /tmp/.cargo-registry ]; then
-            mkdir -p /opt/cargo/registry
-            cp -a /tmp/.cargo-registry/* /opt/cargo/registry/ 2>/dev/null || true
-          fi
-          if [ -d /tmp/.gradle-cache ]; then
-            mkdir -p /workspace/cache/gradle
-            cp -a /tmp/.gradle-cache/* /workspace/cache/gradle/ 2>/dev/null || true
-          fi
-
           docker run --rm \
             -v ${{ github.workspace }}/freenet-android-node:/workspace/freenet-android-node \
             -v ${{ github.workspace }}/freenet-core:/workspace/freenet-core \
