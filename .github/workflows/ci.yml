@@ -42,6 +42,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Fix volume mount permissions (host-side)
+        working-directory: freenet-android-node
+        run: |
+          echo "Current directory ownership:"
+          ls -la .
+          echo "Setting owner to uid:gid 1000:1000 (matches container developer user)..."
+          sudo chown -R 1000:1000 .
+          echo "After chown:"
+          ls -la .
       - name: Build dev image
         working-directory: freenet-android-node
         run: docker compose build dev
