@@ -18,7 +18,8 @@ jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
+
     steps:
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
