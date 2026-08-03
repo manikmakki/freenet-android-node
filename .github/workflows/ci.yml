@@ -106,11 +106,9 @@ jobs:
 
       - name: Fix cache permissions
         run: |
-          # Cache restore produces files owned by root; container runs as UID 1000 (developer user).
-          # Create dirs first (in case cache miss), then chown+chmod.
-          sudo mkdir -p /tmp/.cargo-registry /tmp/.build-target
-          sudo chown -R 1000:1000 /tmp/.cargo-registry /tmp/.build-target
-          sudo chmod -R u+rwX /tmp/.cargo-registry /tmp/.build-target
+          # Cache restore produces files owned by root; container runs as UID 1000.
+          # Use chmod a+rwx so UID 1000 can write regardless of ownership.
+          sudo chmod -R a+rwx /tmp/.cargo-registry /tmp/.build-target 2>/dev/null || true
 
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
@@ -181,11 +179,9 @@ jobs:
 
       - name: Fix cache permissions
         run: |
-          # Cache restore produces files owned by root; container runs as UID 1000 (developer user).
-          # Create dirs first (in case cache miss), then chown+chmod.
-          sudo mkdir -p /tmp/.gradle-cache /tmp/.build-target
-          sudo chown -R 1000:1000 /tmp/.gradle-cache /tmp/.build-target
-          sudo chmod -R u+rwX /tmp/.gradle-cache /tmp/.build-target
+          # Cache restore produces files owned by root; container runs as UID 1000.
+          # Use chmod a+rwx so UID 1000 can write regardless of ownership.
+          sudo chmod -R a+rwx /tmp/.gradle-cache /tmp/.build-target 2>/dev/null || true
 
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
