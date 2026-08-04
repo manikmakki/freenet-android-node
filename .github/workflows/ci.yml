@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       lock: ${{ steps.hash.outputs.lock }}
+
     steps:
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
@@ -37,7 +38,12 @@ jobs:
       - name: Free disk space on runner
         run: |
           docker system prune -af --volumes
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/powershell
+
           echo "Disk space after cleanup:"
           df -h /
 
@@ -56,7 +62,8 @@ jobs:
 
       - name: Save Docker image as artifact
         run: |
-          docker save ${{ env.DOCKER_IMAGE }} | gzip > freenet-docker-image.tar.gz
+          docker save "${{ env.DOCKER_IMAGE }}" | gzip > freenet-docker-image.tar.gz
+
           echo "Image size:"
           du -sh freenet-docker-image.tar.gz
 
@@ -67,9 +74,10 @@ jobs:
           path: freenet-docker-image.tar.gz
           retention-days: 1
 
-      - name: Compute lock hash
+      - name: Compute dependency lock hash
         id: hash
-        run: echo "lock=${{ hashFiles('**/Cargo.lock', '**/*.gradle*', 'Dockerfile') }}" >> $GITHUB_OUTPUT
+        run: |
+          echo "lock=${{ hashFiles('**/Cargo.lock', '**/*.gradle*', '**/gradle-wrapper.properties', '**/Dockerfile') }}" >> "$GITHUB_OUTPUT"
 
   lint:
     name: Lint & Test Rust
@@ -80,7 +88,12 @@ jobs:
       - name: Free disk space on runner
         run: |
           docker system prune -af --volumes
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/powershell
+
           echo "Disk space after cleanup:"
           df -h /
 
@@ -92,30 +105,25 @@ jobs:
       - name: Load Docker image
         run: |
           docker load < freenet-docker-image.tar.gz
-          echo "Loaded image:"
-          docker images ${{ env.DOCKER_IMAGE }}
 
-      - name: Cache Cargo registry
+          echo "Loaded image:"
+          docker images "${{ env.DOCKER_IMAGE }}"
+
+      - name: Cache Cargo home
         uses: actions/cache@v4
         with:
-          path: /tmp/.cargo-registry
+          path: /tmp/.cargo-home
           key: ${{ runner.os }}-cargo-${{ needs.setup.outputs.lock }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Cache build target
+      - name: Cache Rust build target
         uses: actions/cache@v4
         with:
           path: /tmp/.build-target
-          key: ${{ runner.os }}-target-${{ needs.setup.outputs.lock }}
+          key: ${{ runner.os }}-target-lint-${{ needs.setup.outputs.lock }}
           restore-keys: |
-            ${{ runner.os }}-target-
-
-      - name: Fix cache permissions
-        run: |
-          # Cache restore produces files owned by root; container runs as UID 1000.
-          # Use chmod a+rwx so UID 1000 can write regardless of ownership.
-          sudo chmod -R a+rwx /tmp/.cargo-registry /tmp/.build-target 2>/dev/null || true
+            ${{ runner.os }}-target-lint-
 
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
@@ -129,27 +137,47 @@ jobs:
           ref: ${{ env.FREENET_CORE_VERSION }}
           path: freenet-core
 
+      - name: Prepare writable bind mounts
+        run: |
+          mkdir -p \
+            /tmp/.cargo-home \
+            /tmp/.build-target
+
+          sudo chown -R "$(id -u):$(id -g)" \
+            /tmp/.cargo-home \
+            /tmp/.build-target
+
+          chmod -R u+rwX \
+            /tmp/.cargo-home \
+            /tmp/.build-target
+
+          echo "Runner identity:"
+          id
+
+          echo "Bind-mount ownership:"
+          stat -c '%u:%g %a %n' \
+            /tmp/.cargo-home \
+            /tmp/.build-target \
+            "$GITHUB_WORKSPACE/freenet-android-node" \
+            "$GITHUB_WORKSPACE/freenet-core"
+
       - name: Run lint and tests
         run: |
           docker run --rm \
-            -v ${{ github.workspace }}/freenet-android-node:/workspace/freenet-android-node \
-            -v ${{ github.workspace }}/freenet-core:/workspace/freenet-core \
-            -v /tmp/.cargo-registry:/opt/cargo/registry \
-            -v /tmp/.build-target:/workspace/target/cargo \
-            -e CARGO_TARGET_DIR=/workspace/target/cargo \
-            ${{ env.DOCKER_IMAGE }} \
-            bash -c "
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/freenet-android-node,dst=/workspace/freenet-android-node" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/freenet-core,dst=/workspace/freenet-core" \
+            --mount "type=bind,src=/tmp/.cargo-home,dst=/workspace/cache/cargo" \
+            --mount "type=bind,src=/tmp/.build-target,dst=/workspace/target/cargo" \
+            --env HOME=/tmp \
+            --env CARGO_HOME=/workspace/cache/cargo \
+            --env CARGO_TARGET_DIR=/workspace/target/cargo \
+            "${{ env.DOCKER_IMAGE }}" \
+            bash -lc '
+              set -euo pipefail
               cd /workspace/freenet-android-node
-              chmod -R u+rwX .
               ./scripts/check.sh
-            "
-
-      - name: Save build target cache
-        run: |
-          # Container runs as UID 1000, so files written to bind mounts are already owned by 1000.
-          # Just ensure dirs exist before copying back.
-          sudo mkdir -p /tmp/.build-target
-          sudo cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
+            '
 
   build:
     name: Build APK
@@ -160,7 +188,12 @@ jobs:
       - name: Free disk space on runner
         run: |
           docker system prune -af --volumes
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/powershell
+
           echo "Disk space after cleanup:"
           df -h /
 
@@ -172,8 +205,17 @@ jobs:
       - name: Load Docker image
         run: |
           docker load < freenet-docker-image.tar.gz
+
           echo "Loaded image:"
-          docker images ${{ env.DOCKER_IMAGE }}
+          docker images "${{ env.DOCKER_IMAGE }}"
+
+      - name: Cache Cargo home
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.cargo-home
+          key: ${{ runner.os }}-cargo-${{ needs.setup.outputs.lock }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Cache Gradle dependencies
         uses: actions/cache@v4
@@ -183,19 +225,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Cache build target
+      - name: Cache Rust build target
         uses: actions/cache@v4
         with:
           path: /tmp/.build-target
-          key: ${{ runner.os }}-target-${{ needs.setup.outputs.lock }}
+          key: ${{ runner.os }}-target-build-${{ needs.setup.outputs.lock }}
           restore-keys: |
-            ${{ runner.os }}-target-
-
-      - name: Fix cache permissions
-        run: |
-          # Cache restore produces files owned by root; container runs as UID 1000.
-          # Use chmod a+rwx so UID 1000 can write regardless of ownership.
-          sudo chmod -R a+rwx /tmp/.gradle-cache /tmp/.build-target 2>/dev/null || true
+            ${{ runner.os }}-target-build-
 
       - name: Checkout freenet-android-node
         uses: actions/checkout@v4
@@ -209,22 +245,54 @@ jobs:
           ref: ${{ env.FREENET_CORE_VERSION }}
           path: freenet-core
 
+      - name: Prepare writable bind mounts
+        run: |
+          mkdir -p \
+            /tmp/.cargo-home \
+            /tmp/.gradle-cache \
+            /tmp/.build-target
+
+          sudo chown -R "$(id -u):$(id -g)" \
+            /tmp/.cargo-home \
+            /tmp/.gradle-cache \
+            /tmp/.build-target
+
+          chmod -R u+rwX \
+            /tmp/.cargo-home \
+            /tmp/.gradle-cache \
+            /tmp/.build-target
+
+          echo "Runner identity:"
+          id
+
+          echo "Bind-mount ownership:"
+          stat -c '%u:%g %a %n' \
+            /tmp/.cargo-home \
+            /tmp/.gradle-cache \
+            /tmp/.build-target \
+            "$GITHUB_WORKSPACE/freenet-android-node" \
+            "$GITHUB_WORKSPACE/freenet-core"
+
       - name: Build debug APK
         run: |
           docker run --rm \
-            -v ${{ github.workspace }}/freenet-android-node:/workspace/freenet-android-node \
-            -v ${{ github.workspace }}/freenet-core:/workspace/freenet-core \
-            -v /tmp/.gradle-cache:/workspace/cache/gradle \
-            -v /tmp/.build-target:/workspace/target/cargo \
-            -e CARGO_TARGET_DIR=/workspace/target/cargo \
-            -e GRADLE_USER_HOME=/workspace/cache/gradle \
-            -e ANDROID_USER_HOME=/workspace/cache/gradle/android-user \
-            ${{ env.DOCKER_IMAGE }} \
-            bash -c "
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/freenet-android-node,dst=/workspace/freenet-android-node" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/freenet-core,dst=/workspace/freenet-core" \
+            --mount "type=bind,src=/tmp/.cargo-home,dst=/workspace/cache/cargo" \
+            --mount "type=bind,src=/tmp/.gradle-cache,dst=/workspace/cache/gradle" \
+            --mount "type=bind,src=/tmp/.build-target,dst=/workspace/target/cargo" \
+            --env HOME=/tmp \
+            --env CARGO_HOME=/workspace/cache/cargo \
+            --env CARGO_TARGET_DIR=/workspace/target/cargo \
+            --env GRADLE_USER_HOME=/workspace/cache/gradle \
+            --env ANDROID_USER_HOME=/workspace/cache/gradle/android-user \
+            "${{ env.DOCKER_IMAGE }}" \
+            bash -lc '
+              set -euo pipefail
               cd /workspace/freenet-android-node
-              chmod -R u+rwX .
               ./scripts/build-debug.sh
-            "
+            '
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -233,11 +301,5 @@ jobs:
           path: |
             freenet-android-node/android/app/build/outputs/apk/debug/app-debug.apk
             freenet-android-node/android/app/src/main/jniLibs/
+          if-no-files-found: error
           retention-days: 14
-
-      - name: Save build target cache
-        run: |
-          # Container runs as UID 1000, so files written to bind mounts are already owned by 1000.
-          sudo mkdir -p /tmp/.build-target /tmp/.gradle-cache
-          sudo cp -a /workspace/target/cargo/. /tmp/.build-target/ 2>/dev/null || true
-          sudo cp -a /workspace/cache/gradle/. /tmp/.gradle-cache/ 2>/dev/null || true
