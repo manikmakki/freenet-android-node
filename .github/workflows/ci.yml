@@ -170,11 +170,30 @@ jobs:
             --mount "type=bind,src=/tmp/.cargo-home,dst=/workspace/cache/cargo" \
             --mount "type=bind,src=/tmp/.build-target,dst=/workspace/target/cargo" \
             --env HOME=/tmp \
+            --env JAVA_TOOL_OPTIONS=-Duser.home=/tmp \
             --env CARGO_HOME=/workspace/cache/cargo \
             --env CARGO_TARGET_DIR=/workspace/target/cargo \
+            --env ANDROID_USER_HOME=/tmp/android-user \
             "${{ env.DOCKER_IMAGE }}" \
             bash -lc '
               set -euo pipefail
+
+              mkdir -p "$HOME/.android" "$ANDROID_USER_HOME"
+
+              if [[ ! -f "$HOME/.android/debug.keystore" ]]; then
+                echo "Creating Android debug keystore..."
+
+                keytool -genkeypair \
+                  -keystore "$HOME/.android/debug.keystore" \
+                  -storepass android \
+                  -alias androiddebugkey \
+                  -keypass android \
+                  -keyalg RSA \
+                  -keysize 2048 \
+                  -validity 10000 \
+                  -dname "CN=Android Debug,O=Android,C=US"
+              fi
+
               cd /workspace/freenet-android-node
               ./scripts/check.sh
             '
@@ -275,22 +294,21 @@ jobs:
 
       - name: Build debug APK
         run: |
-          (
-            docker run --rm 
-            --user "$(id -u):$(id -g)" 
-            --mount "type=bind,src=${GITHUB_WORKSPACE}/freenet-android-node,dst=/workspace/freenet-android-node" 
-            --mount "type=bind,src=${GITHUB_WORKSPACE}/freenet-core,dst=/workspace/freenet-core" 
-            --mount "type=bind,src=/tmp/.cargo-home,dst=/workspace/cache/cargo" 
-            --mount "type=bind,src=/tmp/.gradle-cache,dst=/workspace/cache/gradle" 
-            --mount "type=bind,src=/tmp/.build-target,dst=/workspace/target/cargo" 
-            --env HOME=/workspace/cache/gradle 
-            --env JAVA_TOOL_OPTIONS=-Duser.home=/workspace/cache/gradle 
-            --env CARGO_HOME=/workspace/cache/cargo 
-            --env CARGO_TARGET_DIR=/workspace/target/cargo 
-            --env GRADLE_USER_HOME=/workspace/cache/gradle 
-            --env ANDROID_USER_HOME=/workspace/cache/gradle/android-user 
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/freenet-android-node,dst=/workspace/freenet-android-node" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/freenet-core,dst=/workspace/freenet-core" \
+            --mount "type=bind,src=/tmp/.cargo-home,dst=/workspace/cache/cargo" \
+            --mount "type=bind,src=/tmp/.gradle-cache,dst=/workspace/cache/gradle" \
+            --mount "type=bind,src=/tmp/.build-target,dst=/workspace/target/cargo" \
+            --env HOME=/workspace/cache/gradle \
+            --env JAVA_TOOL_OPTIONS=-Duser.home=/workspace/cache/gradle \
+            --env CARGO_HOME=/workspace/cache/cargo \
+            --env CARGO_TARGET_DIR=/workspace/target/cargo \
+            --env GRADLE_USER_HOME=/workspace/cache/gradle \
+            --env ANDROID_USER_HOME=/workspace/cache/gradle/android-user \
             "${{ env.DOCKER_IMAGE }}" \
-            bash -lc ' 
+            bash -lc '
             set -euo pipefail
       
               echo "Container identity:"
@@ -324,7 +342,6 @@ jobs:
               cd /workspace/freenet-android-node
               ./scripts/build-debug.sh
             '
-          )
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
