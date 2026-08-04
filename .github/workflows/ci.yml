@@ -77,6 +77,13 @@ jobs:
     needs: setup
     timeout-minutes: 30
     steps:
+      - name: Free disk space on runner
+        run: |
+          docker system prune -af --volumes
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+          echo "Disk space after cleanup:"
+          df -h /
+
       - name: Download Docker image
         uses: actions/download-artifact@v4
         with:
@@ -150,6 +157,13 @@ jobs:
     needs: setup
     timeout-minutes: 30
     steps:
+      - name: Free disk space on runner
+        run: |
+          docker system prune -af --volumes
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+          echo "Disk space after cleanup:"
+          df -h /
+
       - name: Download Docker image
         uses: actions/download-artifact@v4
         with:
