@@ -83,7 +83,7 @@ jobs:
     name: Lint & Test Rust
     runs-on: ubuntu-latest
     needs: setup
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Free disk space on runner
         run: |
