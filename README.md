@@ -2,7 +2,7 @@
 
 An engineering prototype for embedding Freenet in an Android application. The
 current Phase 8 implementation provides a minimal Android shell around Freenet
-core 0.2.119: the existing core dashboard in a locked-down WebView, a hamburger
+core 0.2.120: the existing core dashboard in a locked-down WebView, a hamburger
 drawer for node controls and policy settings, and copyable JSON diagnostics.
 The client/dashboard API remains loopback-only on port 7509, while network mode
 discovers peers from Freenet core's documented gateway index.
