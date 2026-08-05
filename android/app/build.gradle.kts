@@ -3,6 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val releaseKeystorePath = System.getenv("RELEASE_KEYSTORE_PATH")
+
 android {
     namespace = "org.freenet.androidnode"
     compileSdk = 36
@@ -12,13 +14,24 @@ android {
         applicationId = "org.freenet.androidnode"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 2
+        versionName = project.findProperty("appVersionName") as String? ?: "0.1.1"
 
         testInstrumentationRunner = "org.freenet.androidnode.FreenetAndroidTestRunner"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+    }
+
+    signingConfigs {
+        if (releaseKeystorePath != null) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            }
         }
     }
 
@@ -29,6 +42,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (releaseKeystorePath != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
