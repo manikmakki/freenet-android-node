@@ -23,6 +23,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -69,8 +71,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
@@ -131,6 +135,11 @@ private fun AlphaDisclaimerDialog(onAccept: () -> Unit) {
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                Text(
+                    "This is an unofficial, community-built app. It is not published, " +
+                        "maintained, or endorsed by the Freenet Project.",
+                    fontWeight = FontWeight.Bold,
+                )
                 Text("Freenet is not yet optimized for mobile devices.")
                 Text("Running a node may result in:")
                 Text(
@@ -156,7 +165,7 @@ private fun AlphaDisclaimerDialog(onAccept: () -> Unit) {
                         onCheckedChange = null,
                     )
                     Text(
-                        "I have read and accept the risk advised in this disclaimer",
+                        "I have read and accept the risks and notices in this disclaimer",
                         modifier = Modifier.padding(start = 8.dp),
                     )
                 }
@@ -232,7 +241,24 @@ private fun NodeScreen(nodeViewModel: NodeViewModel) {
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text("Freenet Android Node", style = MaterialTheme.typography.titleLarge)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_freenet_logo),
+                            contentDescription = null,
+                            modifier = Modifier.height(32.dp),
+                        )
+                        Column {
+                            Text("Freenet Android Node", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                "Unofficial · not affiliated with the Freenet Project",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
                     OutlinedButton(
                         onClick = {
                             scope.launch {

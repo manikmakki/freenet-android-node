@@ -1,5 +1,9 @@
 # Freenet Android Node
 
+**This is an unofficial, community-built application.** It is not published,
+maintained, or endorsed by the Freenet Project. The app is permitted to display
+the Freenet logo, but that use does not imply official status.
+
 An engineering prototype for embedding Freenet in an Android application. The
 current Phase 8 implementation provides a minimal Android shell around Freenet
 core 0.2.120: the existing core dashboard in a locked-down WebView, a hamburger
@@ -93,12 +97,14 @@ wait for `Stopped`. The Activity polls a structured native status envelope.
 Persistent node data uses `filesDir`, disposable caches use `cacheDir`, and
 identity material uses `noBackupFilesDir`.
 
-On first launch, the app presents a non-dismissible alpha-risk disclaimer. The
-checkbox must be selected before **Accept and continue** is enabled. Acceptance
-is stored for the installed Android `versionCode`; incrementing `versionCode`
-for a later release requires acceptance again. Clearing application data also
-clears acceptance. Boot restoration and direct foreground-service starts are
-blocked until the disclaimer for the current version has been accepted.
+On first launch, the app presents a non-dismissible alpha-risk disclaimer,
+which also states that the app is unofficial and unaffiliated with the
+Freenet Project. The checkbox must be selected before **Accept and continue**
+is enabled. Acceptance is stored for the installed Android `versionCode`;
+incrementing `versionCode` for a later release requires acceptance again.
+Clearing application data also clears acceptance. Boot restoration and direct
+foreground-service starts are blocked until the disclaimer for the current
+version has been accepted.
 
 The Android node uses Freenet's conventional client API port, `7509`. To open
 the running node's dashboard from the development host, forward that port over
