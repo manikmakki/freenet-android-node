@@ -1,15 +1,14 @@
 # Freenet Android Node
 
 **This is an unofficial, community-built application.** It is not published,
-maintained, or endorsed by the Freenet Project. The app is permitted to display
-the Freenet logo, but that use does not imply official status.
+maintained, or endorsed by the Freenet Project. The app is permitted to
+display the Freenet logo, but that use does not imply official status.
 
-An engineering prototype for embedding Freenet in an Android application. The
-current Phase 8 implementation provides a minimal Android shell around Freenet
-core 0.2.120: the existing core dashboard in a locked-down WebView, a hamburger
-drawer for node controls and policy settings, and copyable JSON diagnostics.
-The client/dashboard API remains loopback-only on port 7509, while network mode
-discovers peers from Freenet core's documented gateway index.
+Freenet Android Node runs a real [Freenet](https://freenet.org) node
+(currently core 0.2.120) on your phone. It starts and stops the node for you,
+shows what it's doing, and otherwise gets out of the way so Freenet core's own
+web dashboard can do the rest. This is an early, alpha-stage prototype —
+expect battery drain, rough edges, and the occasional bug.
 
 ## Get the app
 
@@ -44,319 +43,76 @@ adb install -r artifacts/apk/freenet-android-node-debug.apk
 
 Docker Compose handles the entire toolchain (Android SDK/NDK, Rust, Gradle) —
 you only need Docker and ADB on your own machine. The two repositories must
-sit side by side; see the layout in [Prerequisites](#prerequisites) below.
+sit side by side; see [`docs/DEVELOPING.md`](docs/DEVELOPING.md) for the full
+layout and every option.
 
 This produces a debug-signed build rather than the signed release from the
 Releases page. Android treats differently-signed builds of the same app as
 distinct apps for update purposes, so uninstall one before installing the
-other if you already sideloaded the release build. See [Checks](#checks)
-below to also run the full test suite before you trust what you built.
-
-## Prerequisites
-
-- Docker Engine with Docker Compose
-- A sibling `freenet-core` checkout for the local native dependency and Phase 0
-  baseline checks
-- Optional: host-side ADB or Android Studio for installing the exported APK
-
-The compiler, Android SDK/NDK, Rust, Cargo, Gradle, and Java toolchains are
-installed in the project image. No host Android or Rust toolchain is required.
-
-Expected workspace layout:
-
-```text
-workspace/
-├── freenet-core/
-└── freenet-android-node/
-```
-
-## Build
-
-Build the image once:
-
-```bash
-docker compose build dev
-```
-
-Build both Android native libraries and the debug APK:
-
-```bash
-docker compose run --rm dev scripts/build-debug.sh
-```
-
-The build writes host-visible artifacts to:
-
-```text
-artifacts/
-├── apk/
-│   ├── freenet-android-node-debug.apk
-│   └── freenet-android-node-debug-androidTest.apk
-└── native/
-    ├── arm64-v8a/libfreenet_android.so
-    └── x86_64/libfreenet_android.so
-```
-
-Cargo and Gradle caches live in Docker named volumes. Android's debug-only
-keystore is kept under the persistent Gradle cache so APKs from successive
-one-shot containers can update each other. Intermediate output is not copied
-into `artifacts/`.
-
-Verify the exported files from the host:
-
-```bash
-(cd artifacts && sha256sum -c SHA256SUMS.txt)
-```
-
-## Checks
-
-Run the formatting, lint, unit-test, Android lint, and assembly checks:
-
-```bash
-docker compose run --rm dev scripts/check.sh
-```
-
-Run the tracked-clean sibling Freenet Phase 0 baseline checks separately:
-
-```bash
-docker compose run --rm dev scripts/check-freenet-baseline.sh
-```
-
-The Freenet baseline is intentionally separate because its full test and Clippy
-suites are substantially slower than the Android adapter checks.
-
-## Install and exercise the local node
-
-Use a host ADB session so Docker does not need USB access:
-
-```bash
-adb install -r artifacts/apk/freenet-android-node-debug.apk
-adb shell am start -n org.freenet.androidnode/.MainActivity
-```
-
-Press **Start local node** and wait for `RunningLocal`; press **Stop node** and
-wait for `Stopped`. The Activity polls a structured native status envelope.
-Persistent node data uses `filesDir`, disposable caches use `cacheDir`, and
-identity material uses `noBackupFilesDir`.
-
-On first launch, the app presents a non-dismissible alpha-risk disclaimer,
-which also states that the app is unofficial and unaffiliated with the
-Freenet Project. The checkbox must be selected before **Accept and continue**
-is enabled. Acceptance is stored for the installed Android `versionCode`;
-incrementing `versionCode` for a later release requires acceptance again.
-Clearing application data also clears acceptance. Boot restoration and direct
-foreground-service starts are blocked until the disclaimer for the current
-version has been accepted.
-
-The Android node uses Freenet's conventional client API port, `7509`. To open
-the running node's dashboard from the development host, forward that port over
-ADB and visit `http://127.0.0.1:7509/`:
-
-```bash
-adb forward tcp:7509 tcp:7509
-```
-
-The dashboard is available in local mode, but resources hosted by other nodes
-remain unavailable until the Android node is running in network mode and has
-connected peers.
-
-## Embedded dashboard and diagnostics
-
-While the node runs, the app displays Freenet core's own dashboard from
-`http://127.0.0.1:7509/` as its primary content. Android cleartext networking is
-disabled globally and enabled only for that IPv4 loopback host. WebView
-navigation remains restricted to the loopback origin, exposes no JavaScript-to-
-Android bridge, disables file/content access and popups, and allows only the
-dashboard's exact HTTPS logo asset as an external subresource.
-
-User-clicked hosted-app links under `/v1/contract/web/` open in Android's
-default browser, where those apps are not constrained by the embedded
-dashboard's narrow subresource allowlist. The WebView remains on the dashboard;
-dashboard detail routes stay embedded, and redirects or subresources cannot
-launch external applications without a user gesture.
-
-The top-left hamburger opens all Android-owned controls so the rest of the
-screen remains available to the core dashboard. The drawer contains node
-Start/Pause/Resume/Stop controls, the power and network-data policies, the local
-developer start, and navigation to diagnostics. It opens only from the
-hamburger, not an edge swipe. The Android shell follows the system light/dark
-theme; Back closes an open drawer first, then returns diagnostics to Dashboard.
-
-The **For nerds** view refreshes a formatted JSON snapshot containing node
-status and metrics, adapter/core versions, and up to 128 entries from the
-bounded 256-entry sanitized native log ring. **Copy JSON** places the whole
-snapshot on the Android clipboard for issue reports. Identity secrets and raw
-databases are never included.
-
-## Connect to the Freenet network
-
-Press **Start network node** to join the network. The default is deliberately
-fail-closed: Android's active default network must provide validated Internet
-access and report `NET_CAPABILITY_NOT_METERED`. Transport type is not used as a
-cost proxy, so unmetered Wi-Fi, Ethernet, cellular, or VPN networks are eligible
-and metered networks of any type are blocked. The user may instead select **Any
-validated network**. If the selected policy becomes ineligible while the node
-is running, the service performs a graceful shutdown.
-
-The app registers a `ConnectivityManager.NetworkCallback` and forwards default
-network availability, validation, Wi-Fi, metered, VPN, and active-network
-changes to Rust. Status includes current peer count, adapter-observed connection
-attempt epochs, successful connections, bytes sent/received, current network
-type, last network error, and uptime. Peer count and traffic come from Freenet
-core's live transport counters. The prototype does not claim inbound
-reachability; an Android phone behind carrier or Wi-Fi NAT may be primarily
-outbound-reachable.
-
-Run the quick real-network proof from the host:
-
-```bash
-ADB_SERIAL=<device-serial> scripts/smoke-phase7-adb.sh
-```
-
-This first proves that a synthetic cellular configuration is rejected, then
-uses the device's real unmetered Wi-Fi to establish at least one Freenet
-connection, observe bidirectional traffic, and stop gracefully. Run the
-30-minute continuous-peer gate explicitly with:
-
-```bash
-ADB_SERIAL=<device-serial> PHASE7_STABILITY=1 scripts/smoke-phase7-adb.sh
-```
-
-Neither command changes the device's Wi-Fi or cellular settings. Network-loss
-and transport-switch testing therefore requires a separately authorized manual
-or ADB network change while the node is running.
-
-The node lifecycle is owned by `NodeService`, an Android foreground service.
-**Node runs when** defaults to **Manual**; **Charging** runs only while Android
-reports the device is charging, and **Always** runs whenever the network policy
-is eligible. Automatic modes keep a lightweight foreground controller and
-notification alive while waiting for power or network conditions. The selected
-power and network policies survive process and device restarts.
-
-Pause performs a graceful native shutdown and suspends the selected schedule
-until explicit Resume. Stop also performs a graceful shutdown and returns the
-power policy to Manual. Automatic restart is best-effort: the service is sticky
-in automatic modes and a boot/package-update receiver restores it, but Android
-force-stop, OEM background restrictions, and platform foreground-service limits
-can still prevent restart. The app does not request a battery-optimization
-exemption.
-
-Removing the Activity from Recents does not stop the foreground service. The
-persistent notification reports running/waiting/paused state and provides
-Pause/Resume and Stop actions. The `specialUse` foreground-service declaration
-is an engineering choice for this user-visible peer-to-peer workload and still
-requires distribution policy review before any public-store release.
-
-Freenet core currently exposes only a limited aggregate outbound bandwidth
-hook, not reliable independent send and receive policy controls. Separate
-upload/download restrictions are therefore intentionally deferred rather than
-presented as controls the adapter cannot enforce.
-
-Run the repeatable Phase 3 physical-device soak from the host:
-
-```bash
-ADB_SERIAL=<device-serial> PHASE3_CYCLES=20 scripts/smoke-phase3-adb.sh
-```
-
-The script leaves the node stopped. It verifies controlled duplicate Stop and
-Start behavior, then waits for `RunningLocal` and `Stopped` on every cycle.
-
-Run the repeatable Phase 5 physical-device lifecycle proof from the host:
-
-```bash
-ADB_SERIAL=<device-serial> scripts/smoke-phase5-adb.sh
-```
-
-This verifies the foreground notification and its Pause/Stop actions, removes
-the Activity task, turns the screen off, checks non-sticky behavior, force-stops
-the process while the node is live, and then proves a clean explicit restart.
-
-## Persistent storage and prototype identity security
-
-Phase 6 separates Android-owned storage by durability and sensitivity:
-
-```text
-filesDir/freenet/          persistent database, contracts, state, config, logs
-cacheDir/freenet/temporary/  disposable web-app and Wasmtime caches
-noBackupFilesDir/freenet/identity/  transport keypair and delegate cipher
-```
-
-Rust exclusively creates and loads the identity files with owner-only
-permissions. Kotlin receives only a public-key-derived fingerprint and
-aggregate byte counts. The UI labels the current file-backed protection as
-prototype security debt: Android Keystore wrapping, invalidation recovery, and
-explicit temporary-buffer hardening remain required before wider distribution.
-Android backups remain disabled for the entire application.
-
-Run the non-destructive Phase 6 device proof with:
-
-```bash
-ADB_SERIAL=<device-serial> scripts/smoke-phase6-adb.sh
-```
-
-To additionally prove that clearing application data creates a new identity,
-opt in to deleting all debug-app state:
-
-```bash
-ADB_SERIAL=<device-serial> PHASE6_CLEAR_DATA=1 scripts/smoke-phase6-adb.sh
-```
-
-## Run the Phase 4 contract proof
-
-The app exposes **Run WASM contract proof** and **Verify contract persistence**
-for manual testing. The reproducible gate uses Android instrumentation so it
-does not depend on screen, keyguard, or Compose scroll state:
-
-```bash
-ADB_SERIAL=<device-serial> scripts/smoke-phase4-adb.sh
-```
-
-The script installs the checksum-tracked main and instrumentation APKs, runs a
-PUT/GET/UPDATE/GET round-trip with Freenet core's existing
-`test-contract-mock-aligned` fixture, restarts the node, verifies the exact
-updated state, prints timing and peak-RSS evidence, and leaves the node stopped.
-
-Rebuild the packaged upstream fixture from the recorded Freenet baseline with:
-
-```bash
-docker compose run --rm dev scripts/prepare-contract-fixture.sh
-```
-
-## Freenet feature selection
-
-The adapter disables Freenet's implicit defaults and selects the required set
-explicitly: `redb`, `trace`, `wasmtime-backend`, and `websocket`. This preserves
-the current upstream default functionality while making Android builds
-auditable. Freenet does not compile with tracing omitted because several
-unconditionally compiled modules use tracing-gated APIs, so `trace` is required
-in addition to the Phase 2 A-E matrix.
-
-For an x86-64 emulator, Android packages the x86-64 library. A physical ARM64
-device selects the arm64-v8a library from the same APK.
-
-## Useful commands
-
-Open a shell in the development environment:
-
-```bash
-docker compose run --rm dev bash
-```
-
-Rebuild only the Rust native libraries:
-
-```bash
-docker compose run --rm dev scripts/build-native.sh
-```
-
-Assemble Android after the native libraries already exist:
-
-```bash
-docker compose run --rm dev android/gradlew -p android :app:assembleDebug
-```
-
-See [`docs/BASELINE.md`](docs/BASELINE.md),
-[`docs/PORTING_NOTES.md`](docs/PORTING_NOTES.md), and the architecture decision
-record in [`docs/adr/0001-embed-freenet-with-jni.md`](docs/adr/0001-embed-freenet-with-jni.md).
-The gate results are in [`docs/PHASE_0_1_REPORT.md`](docs/PHASE_0_1_REPORT.md),
-[`docs/PHASE_2_REPORT.md`](docs/PHASE_2_REPORT.md), and
-[`docs/PHASE_3_REPORT.md`](docs/PHASE_3_REPORT.md), and
-[`docs/PHASE_4_REPORT.md`](docs/PHASE_4_REPORT.md).
+other if you already sideloaded the release build.
+
+## What the buttons do
+
+Everything Android-specific lives behind the hamburger menu (☰) in the
+top-left; the rest of the screen is Freenet core's own dashboard once a node
+is running.
+
+**Starting the node**
+- **Start network node** — joins the real Freenet network, subject to the
+  **Network data** policy below.
+- **Start local node** — starts the node without connecting to any peers.
+  Mainly useful for developers exercising the app without touching the
+  network.
+
+**Stopping the node**
+- **Pause node** — gracefully shuts the node down but remembers your **Node
+  runs when** choice, so an automatic mode will pick back up on its own.
+- **Resume node** — restarts after a pause.
+- **Stop node** — gracefully shuts the node down and resets **Node runs
+  when** to Manual, so it won't restart on its own.
+
+**Node runs when** — when the node should start automatically:
+- **Manual** — only when you press Start.
+- **Charging** — starts and keeps running while the phone is plugged in.
+- **Always (best effort)** — tries to stay running whenever the network
+  policy is eligible. Android can still stop it (battery optimization,
+  force-stop, OEM background limits) — the app does not request a
+  battery-optimization exemption.
+
+Automatic modes keep a lightweight controller and notification alive while
+waiting for eligible conditions, and the chosen policy survives app and
+device restarts.
+
+**Network data** — which connections the node is allowed to use once it's
+trying to join the network:
+- **Unmetered only** (default) — Wi-Fi, Ethernet, or any connection Android
+  reports as unmetered; blocks cellular and metered Wi-Fi.
+- **Any validated network** — anything Android reports as having validated
+  internet access, including metered connections.
+
+If your active connection stops meeting the selected policy while the node is
+running (for example, leaving Wi-Fi for metered cellular), the node shuts
+down gracefully rather than keep running out of policy.
+
+**For nerds** — a live JSON snapshot of node status, metrics, and recent
+logs, with a **Copy JSON** button for bug reports. Never includes identity
+secrets or raw databases.
+
+Closing the app or removing it from Recents doesn't stop the node — it keeps
+running via a persistent notification, which has its own Pause/Resume and
+Stop actions.
+
+## Acknowledgments
+
+Freenet core — the peer-to-peer software this app embeds — is the work of
+[the Freenet Project](https://freenet.org). The Freenet mark is used with
+permission from Ian. Both are gratefully acknowledged for their work and
+support; neither is affiliated with, endorses, or is responsible for this
+unofficial app.
+
+## For developers
+
+Build instructions, checks, architecture notes, and the manual/automated
+device proofs used during development live in
+[`docs/DEVELOPING.md`](docs/DEVELOPING.md). Cutting a signed release is
+covered in [`docs/RELEASING.md`](docs/RELEASING.md).
