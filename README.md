@@ -11,6 +11,47 @@ drawer for node controls and policy settings, and copyable JSON diagnostics.
 The client/dashboard API remains loopback-only on port 7509, while network mode
 discovers peers from Freenet core's documented gateway index.
 
+## Get the app
+
+### Sideload the signed release (quickest)
+
+1. On your phone, open the [latest release](https://github.com/manikmakki/freenet-android-node/releases/latest)
+   and download the installable app file (the `.apk`).
+2. Android will ask permission to install from whichever app you used to open
+   it (your browser or file manager) — allow it for this one download.
+3. Open the downloaded file and confirm the install.
+4. On first launch you'll see a disclaimer explaining that this is an
+   unofficial, alpha-stage app — read it and accept to continue.
+
+Each release also includes `SHA256SUMS.txt`, so anyone who wants to confirm
+the download wasn't altered in transit can check it against the APK with any
+SHA-256 tool.
+
+### Don't trust a random APK? Build it from source
+
+Nothing here is hidden. If you'd rather not run a binary someone else built,
+build the same app yourself and read every line that goes into it:
+
+```bash
+git clone https://github.com/manikmakki/freenet-android-node.git
+git clone https://github.com/freenet/freenet-core.git
+cd freenet-android-node
+git checkout v0.2.120   # optional: build the exact commit behind a specific release
+docker compose build dev
+docker compose run --rm dev scripts/build-debug.sh
+adb install -r artifacts/apk/freenet-android-node-debug.apk
+```
+
+Docker Compose handles the entire toolchain (Android SDK/NDK, Rust, Gradle) —
+you only need Docker and ADB on your own machine. The two repositories must
+sit side by side; see the layout in [Prerequisites](#prerequisites) below.
+
+This produces a debug-signed build rather than the signed release from the
+Releases page. Android treats differently-signed builds of the same app as
+distinct apps for update purposes, so uninstall one before installing the
+other if you already sideloaded the release build. See [Checks](#checks)
+below to also run the full test suite before you trust what you built.
+
 ## Prerequisites
 
 - Docker Engine with Docker Compose
