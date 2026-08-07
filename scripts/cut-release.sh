@@ -149,7 +149,7 @@ release_script='
   set -euo pipefail
   cd /workspace/freenet-android-node
   ./scripts/build-release.sh
-  apksigner_bin="$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -name apksigner | sort -V | tail -1)"
+  apksigner_bin="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner | sort -V | tail -1)"
   echo "Verifying release APK signature:"
   "${apksigner_bin}" verify --print-certs artifacts/apk/freenet-android-node-release.apk
 '
