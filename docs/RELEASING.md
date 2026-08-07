@@ -43,7 +43,7 @@ ran `keytool`, keeping only the backup.
 
 Trigger the `CI` workflow manually with two inputs:
 
-- `freenet_core_version` — the freenet-core git ref to build against (e.g. `v0.2.120`)
+- `freenet_core_version` — the freenet-core git ref to build against (e.g. `v0.2.121`)
 - `release_version` — the app's release version, no leading `v` (e.g. `0.2.0-beta.2`)
 
 Via the GitHub UI: **Actions → CI → Run workflow**, fill in the two fields.
@@ -51,7 +51,7 @@ Via the GitHub UI: **Actions → CI → Run workflow**, fill in the two fields.
 Via `gh`:
 ```bash
 gh workflow run ci.yml \
-  -f freenet_core_version=v0.2.120 \
+  -f freenet_core_version=v0.2.121 \
   -f release_version=0.2.0-beta.2
 ```
 

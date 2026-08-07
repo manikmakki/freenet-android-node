@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       freenet_core_version:
-        description: "freenet-core ref to build against (e.g. v0.2.120)"
+        description: "freenet-core ref to build against (e.g. v0.2.121)"
         required: true
-        default: "v0.2.120"
+        default: "v0.2.121"
       release_version:
         description: "App release version, no leading v (e.g. 0.2.0-beta.2)"
         required: true
@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FREENET_CORE_VERSION: "v0.2.120"
+  FREENET_CORE_VERSION: "v0.2.121"
   DOCKER_IMAGE: freenet-android-node-dev
 
 jobs:
