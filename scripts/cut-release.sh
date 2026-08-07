@@ -30,9 +30,14 @@ if [[ ! "${raw_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 app_version_name="${raw_version#v}"
-# This project pins the app version to freenet-core's patch number
-# (see git history: "bump to .120" etc. tracked both together).
-app_version_code="${app_version_name##*.}"
+# versionCode is "<minor><patch>" with no dot (0.2.120 -> 2120), matching the
+# convention the last real release (v0.2.120, versionCode 2120) was built
+# with. Must stay monotonically increasing across releases for in-place
+# updates to install; this breaks if the minor version ever changes.
+rest="${app_version_name#*.}"
+minor_ver="${rest%%.*}"
+patch_ver="${rest#*.}"
+app_version_code="${minor_ver}${patch_ver}"
 release_tag="v${app_version_name}"
 
 echo "== freenet-core -> ${raw_version} (checkout: ${freenet_core_dir})"
