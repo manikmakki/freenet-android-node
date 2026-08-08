@@ -12,7 +12,7 @@ home_cache="${cache_root}/home"
 
 usage() {
   echo "Usage: $(basename "$0") <freenet-core-version>" >&2
-  echo "  e.g. $(basename "$0") v0.2.122" >&2
+  echo "  e.g. $(basename "$0") v0.2.123" >&2
   echo "" >&2
   echo "Checks out that freenet-core ref, then runs the same lint/test and" >&2
   echo "release build steps CI runs, inside the project's Docker image, with" >&2

@@ -5,7 +5,7 @@ maintained, or endorsed by the Freenet Project. The app is permitted to
 display the Freenet logo, but that use does not imply official status.
 
 Freenet Android Node runs a real [Freenet](https://freenet.org) node
-(currently core 0.2.122) on your phone. It starts and stops the node for you,
+(currently core 0.2.123) on your phone. It starts and stops the node for you,
 shows what it's doing, and otherwise gets out of the way so Freenet core's own
 web dashboard can do the rest. This is an early, alpha-stage prototype —
 expect battery drain, rough edges, and the occasional bug.
@@ -35,7 +35,7 @@ build the same app yourself and read every line that goes into it:
 git clone https://github.com/manikmakki/freenet-android-node.git
 git clone https://github.com/freenet/freenet-core.git
 cd freenet-android-node
-git checkout v0.2.122   # optional: build the exact commit behind a specific release
+git checkout v0.2.123   # optional: build the exact commit behind a specific release
 docker compose build dev
 docker compose run --rm dev scripts/build-debug.sh
 adb install -r artifacts/apk/freenet-android-node-debug.apk
