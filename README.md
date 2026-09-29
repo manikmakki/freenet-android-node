@@ -1,5 +1,7 @@
 # Freenet Android Node
 
+**This repo is now archived. Please see the downstream fork [https://github.com/HostFat/freenet-android-node](https://github.com/HostFat/freenet-android-node) for more up-to-date releases. Be advised, switching to their version of the APK will require uninstalling this version first due to different signing keys.**
+
 **This is an unofficial, community-built application.** It is not published,
 maintained, or endorsed by the Freenet Project. The app is permitted to
 display the Freenet logo, but that use does not imply official status.
